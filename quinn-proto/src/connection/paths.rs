@@ -159,7 +159,7 @@ impl PathData {
 
     /// Remove `packet` with number `pn` from this path's congestion control counters, or return
     /// `false` if `pn` was sent before this path was established.
-    pub(super) fn remove_in_flight(&mut self, pn: u64, packet: &SentPacket) -> bool {
+    pub(super) fn remove_in_flight(&mut self, packet: &SentPacket) -> bool {
         if packet.path_generation != self.generation {
             return false;
         }
