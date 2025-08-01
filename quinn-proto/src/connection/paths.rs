@@ -42,6 +42,9 @@ pub(super) struct PathData {
     /// Used to determine whether a packet was sent on an earlier path. Insufficient to determine if
     /// a packet was sent on a later path.
     first_packet: Option<u64>,
+
+    /// Tag uniquely identifying a path in a connection
+    generation: u64,
 }
 
 impl PathData {
@@ -49,6 +52,7 @@ impl PathData {
         remote: SocketAddr,
         allow_mtud: bool,
         peer_max_udp_payload_size: Option<u16>,
+        generation: u64,
         now: Instant,
         config: &TransportConfig,
     ) -> Self {
@@ -90,10 +94,16 @@ impl PathData {
             first_packet_after_rtt_sample: None,
             in_flight: InFlight::new(),
             first_packet: None,
+            generation,
         }
     }
 
-    pub(super) fn from_previous(remote: SocketAddr, prev: &Self, now: Instant) -> Self {
+    pub(super) fn from_previous(
+        remote: SocketAddr,
+        prev: &Self,
+        generation: u64,
+        now: Instant,
+    ) -> Self {
         let congestion = prev.congestion.clone_box();
         let smoothed_rtt = prev.rtt.get();
         Self {
@@ -111,6 +121,7 @@ impl PathData {
             first_packet_after_rtt_sample: prev.first_packet_after_rtt_sample,
             in_flight: InFlight::new(),
             first_packet: None,
+            generation,
         }
     }
 
@@ -154,6 +165,10 @@ impl PathData {
         }
         self.in_flight.remove(packet);
         true
+    }
+
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
     }
 }
 
