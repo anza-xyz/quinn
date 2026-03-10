@@ -63,6 +63,7 @@ impl Endpoint {
     /// address. For example:
     ///
     /// ```
+    /// use anza_quinn as quinn;
     /// quinn::Endpoint::client((std::net::Ipv6Addr::UNSPECIFIED, 0).into());
     /// ```
     ///

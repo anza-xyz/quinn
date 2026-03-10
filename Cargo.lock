@@ -89,6 +89,70 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0674a1ddeecb70197781e945de4b3b8ffb61fa939a5597bcf48503737663100"
 
 [[package]]
+name = "anza-quinn"
+version = "0.11.9-rustsec20260037"
+dependencies = [
+ "anyhow",
+ "anza-quinn-proto",
+ "async-io",
+ "async-std",
+ "bencher",
+ "bytes",
+ "cfg_aliases",
+ "clap",
+ "crc",
+ "directories-next",
+ "futures-io",
+ "pin-project-lite",
+ "quinn-udp",
+ "rand",
+ "rcgen",
+ "rustc-hash 2.1.1",
+ "rustls",
+ "rustls-pemfile",
+ "smol",
+ "socket2",
+ "thiserror 2.0.16",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "url",
+ "web-time",
+]
+
+[[package]]
+name = "anza-quinn-proto"
+version = "0.11.13-rustsec20260037"
+dependencies = [
+ "arbitrary",
+ "assert_matches",
+ "aws-lc-rs",
+ "bytes",
+ "fastbloom",
+ "getrandom 0.3.3",
+ "hex-literal",
+ "lazy_static",
+ "lru-slab",
+ "qlog",
+ "rand",
+ "rand_pcg",
+ "rcgen",
+ "ring",
+ "rustc-hash 2.1.1",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "slab",
+ "thiserror 2.0.16",
+ "tinyvec",
+ "tracing",
+ "tracing-subscriber",
+ "wasm-bindgen-test",
+ "web-time",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -350,10 +414,10 @@ name = "bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
  "clap",
  "hdrhistogram",
- "quinn",
  "rcgen",
  "rustls",
  "tokio",
@@ -414,8 +478,8 @@ name = "book"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
- "quinn",
  "rcgen",
  "rustls",
 ]
@@ -888,9 +952,9 @@ dependencies = [
 name = "fuzz"
 version = "0.1.0"
 dependencies = [
+ "anza-quinn-proto",
  "arbitrary",
  "libfuzzer-sys",
- "quinn-proto",
 ]
 
 [[package]]
@@ -1460,11 +1524,11 @@ name = "perf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
+ "anza-quinn-proto",
  "bytes",
  "clap",
  "hdrhistogram",
- "quinn",
- "quinn-proto",
  "rcgen",
  "rustls",
  "rustls-pemfile",
@@ -1586,70 +1650,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
-]
-
-[[package]]
-name = "quinn"
-version = "0.11.9"
-dependencies = [
- "anyhow",
- "async-io",
- "async-std",
- "bencher",
- "bytes",
- "cfg_aliases",
- "clap",
- "crc",
- "directories-next",
- "futures-io",
- "pin-project-lite",
- "quinn-proto",
- "quinn-udp",
- "rand",
- "rcgen",
- "rustc-hash 2.1.1",
- "rustls",
- "rustls-pemfile",
- "smol",
- "socket2",
- "thiserror 2.0.16",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "url",
- "web-time",
-]
-
-[[package]]
-name = "quinn-proto"
-version = "0.11.13"
-dependencies = [
- "arbitrary",
- "assert_matches",
- "aws-lc-rs",
- "bytes",
- "fastbloom",
- "getrandom 0.3.3",
- "hex-literal",
- "lazy_static",
- "lru-slab",
- "qlog",
- "rand",
- "rand_pcg",
- "rcgen",
- "ring",
- "rustc-hash 2.1.1",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "slab",
- "thiserror 2.0.16",
- "tinyvec",
- "tracing",
- "tracing-subscriber",
- "wasm-bindgen-test",
- "web-time",
 ]
 
 [[package]]

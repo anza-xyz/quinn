@@ -7,6 +7,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
 };
 
+use anza_quinn as quinn;
 use quinn::Endpoint;
 
 mod common;

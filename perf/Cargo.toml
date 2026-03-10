@@ -23,8 +23,8 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 hdrhistogram = { workspace = true }
-quinn = { path = "../quinn" }
-quinn-proto = { path = "../quinn-proto" }
+quinn = { package = "anza-quinn", path = "../quinn" }
+quinn-proto = { package = "anza-quinn-proto", path = "../quinn-proto" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
