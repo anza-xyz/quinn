@@ -788,13 +788,14 @@ impl Connection {
                 // especially important with ack delay, since the peer might not
                 // have gotten any other ACK for the data earlier on.
                 if !self.spaces[space_id].pending_acks.ranges().is_empty() {
-                    Self::populate_acks(
+                    Self::try_populate_acks(
                         now,
                         self.receiving_ecn,
                         &mut SentFrames::default(),
                         &mut self.spaces[space_id],
                         buf,
                         &mut self.stats,
+                        buf_capacity,
                     );
                 }
 
@@ -877,8 +878,26 @@ impl Connection {
                 }
             }
 
+            let payload_start = buf.len();
             let sent =
                 self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
+
+            if space_id == SpaceId::Initial
+                && sent.largest_acked.is_none()
+                && self.spaces[space_id].pending_acks.can_send()
+                && buf.len() == payload_start
+                && builder.partial_encode.start == builder.datagram_start
+                && buf_capacity - builder.datagram_start == usize::from(self.path.current_mtu())
+            {
+                buf.truncate(builder.partial_encode.start);
+                self.kill(
+                    TransportError::PROTOCOL_VIOLATION(
+                        "Initial token leaves insufficient space for ACK",
+                    )
+                    .into(),
+                );
+                return None;
+            }
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
@@ -3173,13 +3192,14 @@ impl Connection {
 
         // ACK
         if space.pending_acks.can_send() {
-            Self::populate_acks(
+            Self::try_populate_acks(
                 now,
                 self.receiving_ecn,
                 &mut sent,
                 space,
                 buf,
                 &mut self.stats,
+                max_size,
             );
         }
 
@@ -3394,17 +3414,21 @@ impl Connection {
         sent
     }
 
-    /// Write pending ACKs into a buffer
+    /// Tries to write pending ACKs into a buffer if there is enough space.
+    ///
+    /// If the ACK frame does not fit into the buffer, the ACK frame will not
+    /// be sent at all.
     ///
     /// This method assumes ACKs are pending, and should only be called if
     /// `!PendingAcks::ranges().is_empty()` returns `true`.
-    fn populate_acks(
+    fn try_populate_acks(
         now: Instant,
         receiving_ecn: bool,
         sent: &mut SentFrames,
         space: &mut PacketSpace,
         buf: &mut Vec<u8>,
         stats: &mut ConnectionStats,
+        max_size: usize,
     ) {
         debug_assert!(!space.pending_acks.ranges().is_empty());
 
@@ -3415,7 +3439,6 @@ impl Connection {
         } else {
             None
         };
-        sent.largest_acked = space.pending_acks.ranges().max();
 
         let delay_micros = space.pending_acks.ack_delay(now).as_micros() as u64;
 
@@ -3429,7 +3452,14 @@ impl Connection {
             delay_micros
         );
 
+        let no_acks_len = buf.len();
         frame::Ack::encode(delay as _, space.pending_acks.ranges(), ecn, buf);
+        if buf.len() > max_size {
+            // The ACK frame is too large. Remove it.
+            buf.truncate(no_acks_len);
+            return;
+        }
+        sent.largest_acked = space.pending_acks.ranges().max();
         stats.frame_tx.acks += 1;
     }
 
