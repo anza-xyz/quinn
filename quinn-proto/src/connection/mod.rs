@@ -881,8 +881,26 @@ impl Connection {
                 }
             }
 
+            let payload_start = buf.len();
             let sent =
                 self.populate_packet(now, space_id, buf, builder.max_size, builder.exact_number);
+
+            if space_id == SpaceId::Initial
+                && sent.largest_acked.is_none()
+                && self.spaces[space_id].pending_acks.can_send()
+                && buf.len() == payload_start
+                && builder.partial_encode.start == builder.datagram_start
+                && buf_capacity - builder.datagram_start == usize::from(self.path.current_mtu())
+            {
+                buf.truncate(builder.partial_encode.start);
+                self.kill(
+                    TransportError::PROTOCOL_VIOLATION(
+                        "Initial token leaves insufficient space for ACK",
+                    )
+                    .into(),
+                );
+                return None;
+            }
 
             // ACK-only packets should only be sent when explicitly allowed. If we write them due to
             // any other reason, there is a bug which leads to one component announcing write
