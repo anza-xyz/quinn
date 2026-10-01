@@ -1,6 +1,6 @@
 [package]
-name = "quinn-proto"
-version = "0.11.15"
+name = "anza-quinn-proto"
+version = "0.11.15-issue2860"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
