@@ -1,6 +1,6 @@
 [package]
-name = "anza-quinn"
-version = "0.11.11-issue2860"
+name = "quinn"
+version = "0.11.11"
 license.workspace = true
 repository.workspace = true
 description = "Versatile QUIC transport protocol implementation"
@@ -59,7 +59,7 @@ bytes = { workspace = true }
 futures-io = { workspace = true, optional = true }
 rustc-hash = { workspace = true }
 pin-project-lite = { workspace = true }
-proto = { package = "anza-quinn-proto", path = "../quinn-proto", version = "=0.11.15-issue2860", default-features = false }
+proto = { package = "quinn-proto", path = "../quinn-proto", version = "0.11.15", default-features = false }
 rustls = { workspace = true, optional = true }
 smol = { workspace = true, optional = true }
 thiserror = { workspace = true }

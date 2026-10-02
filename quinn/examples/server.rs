@@ -11,7 +11,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use anza_quinn as quinn;
 use clap::Parser;
 use proto::crypto::rustls::QuicServerConfig;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, pem::PemObject};
