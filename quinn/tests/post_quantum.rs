@@ -12,7 +12,6 @@ use rustls::{
 };
 use tracing::info;
 
-use anza_quinn as quinn;
 use quinn::{
     Endpoint,
     crypto::rustls::{HandshakeData, QuicClientConfig, QuicServerConfig},

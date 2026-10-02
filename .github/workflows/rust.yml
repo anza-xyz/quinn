@@ -140,22 +140,22 @@ jobs:
       - uses: bytecodealliance/actions/wasm-tools/setup@v1
       - uses: cargo-bins/cargo-binstall@main
 
-      - run: cargo test --locked -p anza-quinn-proto --target wasm32-unknown-unknown --no-run
+      - run: cargo test --locked -p quinn-proto --target wasm32-unknown-unknown --no-run
       - run: cargo check --locked -p quinn-udp --target wasm32-unknown-unknown --no-default-features --features=tracing,log
-      - run: cargo rustc --locked -p anza-quinn --target wasm32-unknown-unknown --no-default-features --features=log,platform-verifier,rustls-ring --crate-type=cdylib
+      - run: cargo rustc --locked -p quinn --target wasm32-unknown-unknown --no-default-features --features=log,platform-verifier,rustls-ring --crate-type=cdylib
 
       # If the Wasm file contains any 'import "env"' declarations, then
       # some non-Wasm-compatible code made it into the final code.
       - name: Ensure no 'import "env"' in quinn_proto Wasm
         run: |
-          ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/deps/anza_quinn_proto-*.wasm | grep 'import "env"'
+          ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/deps/quinn_proto-*.wasm | grep 'import "env"'
       - name: Ensure no 'import "env"' in quinn Wasm
         run: |
-          ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/anza_quinn.wasm | grep 'import "env"'
+          ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/quinn.wasm | grep 'import "env"'
 
       # Match the version of wasm-bindgen used in `Cargo.lock`
       - run: cargo binstall wasm-bindgen-cli@0.2.121 --locked --no-confirm
-      - run: cargo test --locked -p anza-quinn-proto --target wasm32-unknown-unknown
+      - run: cargo test --locked -p quinn-proto --target wasm32-unknown-unknown
 
   msrv:
     runs-on: ubuntu-latest
@@ -164,7 +164,7 @@ jobs:
       # Note that we must also update the README when changing the MSRV
       - uses: dtolnay/rust-toolchain@1.85
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --locked --lib --all-features -p quinn-udp -p anza-quinn-proto -p anza-quinn
+      - run: cargo check --locked --lib --all-features -p quinn-udp -p quinn-proto -p quinn
 
   lint:
     runs-on: ubuntu-latest
@@ -223,9 +223,7 @@ jobs:
         java-version: '21'
 
     - name: Install Android SDK
-      uses: android-actions/setup-android@v4
-      with:
-        packages: 'platform-tools'
+      uses: android-actions/setup-android@v3
 
     - name: Install Android NDK
       run: sdkmanager --install "ndk;25.2.9519653"

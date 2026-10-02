@@ -8,7 +8,6 @@ use std::{
     sync::Arc,
 };
 
-use anza_quinn as quinn;
 use proto::crypto::rustls::QuicClientConfig;
 use quinn::{ClientConfig, Endpoint};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
