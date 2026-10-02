@@ -6,6 +6,7 @@ use std::{
     time::Duration,
 };
 
+use anza_quinn as quinn;
 use crc::Crc;
 use quinn::{ConnectionError, ReadError, StoppedError, TransportConfig, WriteError};
 use rand::{self, RngCore};
