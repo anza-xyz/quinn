@@ -3448,8 +3448,8 @@ impl Connection {
 
     /// Tries to write pending ACKs into a buffer if there is enough space.
     ///
-    /// If the ACK frame does not fit into the buffer, the ACK frame will not
-    /// be sent at all.
+    /// Older ranges are omitted if necessary. If even the largest range does not fit,
+    /// nothing is written and the ACK remains pending.
     ///
     /// This method assumes ACKs are pending, and should only be called if
     /// `!PendingAcks::ranges().is_empty()` returns `true`.
@@ -3484,11 +3484,13 @@ impl Connection {
             delay_micros
         );
 
-        let no_acks_len = buf.len();
-        frame::Ack::encode(delay as _, space.pending_acks.ranges(), ecn, buf);
-        if buf.len() > max_size {
-            // The ACK frame is too large. Remove it.
-            buf.truncate(no_acks_len);
+        if !frame::Ack::encode(
+            delay,
+            space.pending_acks.ranges(),
+            ecn,
+            buf,
+            max_size.saturating_sub(buf.len()),
+        ) {
             return;
         }
         sent.largest_acked = space.pending_acks.ranges().max();
@@ -4148,23 +4150,158 @@ mod tests {
 
     #[cfg(feature = "rustls-ring")]
     #[test]
+    fn large_initial_token_ack_progress() {
+        let received = Instant::now();
+        // Exercise eight-byte ACK delays, packet numbers, and ECN counters.
+        let now = received + Duration::from_secs(10_000);
+        for receiving_ecn in [false, true] {
+            for ping in [false, true] {
+                let mut conn = client_with_initial_token(1094, received);
+                let keys = conn
+                    .crypto
+                    .initial_keys(&conn.initial_dst_cid, Side::Server);
+                conn.receiving_ecn = receiving_ecn;
+                let space = &mut conn.spaces[SpaceId::Initial];
+                space.pending.crypto.clear();
+                space.ping_pending = ping;
+                space.ecn_counters = frame::EcnCounts {
+                    ect0: 1 << 32,
+                    ect1: 1 << 32,
+                    ce: 1 << 32,
+                };
+                let ecn = receiving_ecn.then_some(space.ecn_counters);
+                let first_pn = 1 << 32;
+                for pn in (first_pn..first_pn + 80).step_by(2) {
+                    space.pending_acks.insert_one(pn, received);
+                    space.dedup.insert(pn);
+                    space
+                        .pending_acks
+                        .packet_received(received, pn, true, &space.dedup);
+                }
+                assert!(space.pending_acks.can_send());
+
+                let mut buf = Vec::new();
+                assert!(conn.poll_transmit(now, 1, &mut buf).is_some());
+                assert_eq!(buf.len(), 1200);
+                let (packet, rest) = PartialDecode::new(
+                    buf.as_slice().into(),
+                    &FixedLengthConnectionIdParser::new(0),
+                    crate::DEFAULT_SUPPORTED_VERSIONS,
+                    false,
+                )
+                .unwrap();
+                assert!(rest.is_none());
+                let mut packet = packet.finish(Some(&*keys.header.remote)).unwrap();
+                keys.packet
+                    .remote
+                    .decrypt(0, &packet.header_data, &mut packet.payload)
+                    .unwrap();
+                let mut frames = frame::Iter::new(packet.payload.freeze())
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .filter(|frame| !matches!(frame, Frame::Padding));
+                if ping {
+                    assert!(matches!(frames.next(), Some(Frame::Ping)));
+                }
+                let Some(Frame::Ack(ack)) = frames.next() else {
+                    panic!("expected ACK")
+                };
+                // Of the 40 pending ACK ranges, the largest-numbered range must always be
+                // included, along with as many older ranges as fit, but not all 40 ranges.
+                assert_eq!(ack.largest, first_pn + 78);
+                assert_eq!(ack.ecn, ecn);
+                assert!((1..40).contains(&ack.iter().count()));
+                assert!(frames.next().is_none());
+                let space = &conn.spaces[SpaceId::Initial];
+                assert!(!space.pending_acks.can_send());
+                assert_eq!(space.pending_acks.ranges().len(), 40);
+                assert!(!conn.is_closed());
+                buf.clear();
+                assert!(conn.poll_transmit(now, 1, &mut buf).is_none());
+                assert!(!conn.is_closed());
+            }
+        }
+    }
+
+    #[cfg(feature = "rustls-ring")]
+    #[test]
+    fn initial_ack_deferred_after_ping() {
+        let now = Instant::now();
+        let mut conn = client_with_initial_token(1094, now);
+        let space = &mut conn.spaces[SpaceId::Initial];
+        space.pending.crypto.clear();
+        space.ping_pending = true;
+        for pn in [0, 2] {
+            space.pending_acks.insert_one(pn, now);
+            space.dedup.insert(pn);
+            space
+                .pending_acks
+                .packet_received(now, pn, true, &space.dedup);
+        }
+        assert!(space.pending_acks.can_send());
+
+        // Isolate packet assembly with exactly enough room for this five-byte ACK.
+        let mut buf = Vec::new();
+        let sent = conn.populate_packet(now, SpaceId::Initial, &mut buf, 5, 0);
+        assert!(sent.largest_acked.is_none());
+        assert!(matches!(
+            frame::Iter::new(buf.clone().into()).unwrap().next(),
+            Some(Ok(Frame::Ping))
+        ));
+        assert_eq!(buf.len(), 1);
+        assert!(!conn.spaces[SpaceId::Initial].ping_pending);
+        assert!(conn.spaces[SpaceId::Initial].pending_acks.can_send());
+
+        buf.clear();
+        let sent = conn.populate_packet(now, SpaceId::Initial, &mut buf, 5, 1);
+        assert_eq!(sent.largest_acked, Some(2));
+        assert_eq!(buf.len(), 5);
+        assert!(!conn.is_closed());
+    }
+
+    #[cfg(feature = "rustls-ring")]
+    #[test]
+    fn large_initial_token_packet_number_growth() {
+        let now = Instant::now();
+        // With no outgoing packets acknowledged, packet number 127 takes one byte and leaves
+        // exactly the required 50 payload bytes with this token. Packet number 128 takes two
+        // bytes, leaving only 49. The guard enforces the worst-case single-range ACK reservation
+        // even without ECN; this tests header growth, not whether a particular ACK would fit.
+        for (pn, fits) in [(127, true), (128, false)] {
+            let mut conn = client_with_initial_token(1094, now);
+            conn.spaces[SpaceId::Initial].next_packet_number = pn;
+            let mut buf = Vec::new();
+            assert_eq!(conn.poll_transmit(now, 1, &mut buf).is_some(), fits);
+            assert_eq!(conn.is_closed(), !fits);
+            if !fits {
+                assert!(buf.is_empty());
+            }
+        }
+    }
+
+    #[cfg(feature = "rustls-ring")]
+    #[test]
     fn large_initial_token_leaves_room_for_close() {
-        // With 40 bytes of header overhead, a 16-byte tag, and a 35-byte ACK,
-        // a 1084-byte token leaves exactly ConnectionClose::SIZE_BOUND bytes.
-        for (token_len, ack_fits) in [
-            (1083, true),
-            (1084, true),
-            (1085, false),
-            (1100, false),
-            // Exactly enough frame space for CONNECTION_CLOSE alone.
-            (1119, false),
-        ] {
+        // In a 1200-byte datagram, 40 bytes of header overhead and a 16-byte tag leave
+        // 60 payload bytes with a 1084-byte token: exactly enough for the 35-byte ACK covering
+        // all 16 ranges and the 25-byte CLOSE reservation. With larger accepted tokens, fewer
+        // ACK ranges fit alongside CLOSE.
+        // A 1094-byte token leaves 50 payload bytes, so the ACK budget is 25 bytes. In the
+        // final case, ECN counters make even a single-range ACK 29 bytes, so only CLOSE is sent.
+        for (token_len, ack_ranges) in [(1083, 16), (1084, 16), (1085, 15), (1094, 11), (1094, 0)] {
             let now = Instant::now();
             let mut conn = client_with_initial_token(token_len, now);
             let keys = conn
                 .crypto
                 .initial_keys(&conn.initial_dst_cid, Side::Server);
+            // With large ECN counters, even one range cannot fit alongside CLOSE.
+            conn.receiving_ecn = ack_ranges == 0;
             let space = &mut conn.spaces[SpaceId::Initial];
+            space.ecn_counters = frame::EcnCounts {
+                ect0: 1 << 32,
+                ect1: 1 << 32,
+                ce: 1 << 32,
+            };
             for pn in (0..32).step_by(2) {
                 space.pending_acks.insert_one(pn, now);
                 space.dedup.insert(pn);
@@ -4196,11 +4333,12 @@ mod tests {
                 .unwrap()
                 .map(Result::unwrap)
                 .filter(|frame| !matches!(frame, Frame::Padding));
-            if ack_fits {
-                assert!(
-                    matches!(frames.next(), Some(Frame::Ack(_))),
-                    "token {token_len}"
-                );
+            if ack_ranges > 0 {
+                let Some(Frame::Ack(ack)) = frames.next() else {
+                    panic!("token {token_len}: expected ACK")
+                };
+                assert_eq!(ack.largest, 30);
+                assert_eq!(ack.iter().count(), ack_ranges);
             }
             assert!(
                 matches!(
