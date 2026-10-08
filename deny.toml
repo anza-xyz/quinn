@@ -19,4 +19,8 @@ expression = "ISC AND MIT AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [advisories]
-ignore = ["RUSTSEC-2025-0052"]
+ignore = [
+    "RUSTSEC-2025-0052",
+    # Agave v4.4 uses patched rustls 0.23.45; preserve Quinn's upstream lockfile.
+    "RUSTSEC-2026-0285",
+]
