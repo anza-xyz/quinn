@@ -196,6 +196,8 @@ jobs:
     - uses: EmbarkStudios/cargo-deny-action@v2
 
   test-android:
+    # Disabled for the Agave v4.3 backport.
+    if: ${{ false }}
     runs-on: ubuntu-latest
 
     strategy:
