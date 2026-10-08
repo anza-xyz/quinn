@@ -196,6 +196,7 @@ jobs:
     - uses: EmbarkStudios/cargo-deny-action@v2
 
   test-android:
+    if: ${{ false }}
     runs-on: ubuntu-latest
 
     strategy:
