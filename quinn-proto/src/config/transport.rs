@@ -86,6 +86,7 @@ impl TransportConfig {
     ///
     /// ```
     /// # use std::{convert::TryInto, time::Duration};
+    /// # use anza_quinn_proto as quinn_proto;
     /// # use quinn_proto::{TransportConfig, VarInt, VarIntBoundsExceeded};
     /// # fn main() -> Result<(), VarIntBoundsExceeded> {
     /// let mut config = TransportConfig::default();
@@ -315,6 +316,7 @@ impl TransportConfig {
     ///
     /// # Example
     /// ```
+    /// # use anza_quinn_proto as quinn_proto;
     /// # use quinn_proto::*; use std::sync::Arc;
     /// let mut config = TransportConfig::default();
     /// config.congestion_controller_factory(Arc::new(congestion::NewRenoConfig::default()));
@@ -750,6 +752,7 @@ impl Default for MtuDiscoveryConfig {
 ///
 /// ```
 /// # use std::{convert::TryFrom, time::Duration};
+/// # use anza_quinn_proto as quinn_proto;
 /// # use quinn_proto::{IdleTimeout, VarIntBoundsExceeded, VarInt};
 /// # fn main() -> Result<(), VarIntBoundsExceeded> {
 /// // A `VarInt`-encoded value in milliseconds

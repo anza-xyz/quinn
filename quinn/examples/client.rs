@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use anza_quinn as quinn;
 use clap::Parser;
 use proto::crypto::rustls::QuicClientConfig;
 use rustls::pki_types::CertificateDer;
