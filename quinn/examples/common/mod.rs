@@ -1,6 +1,7 @@
 #![cfg(any(feature = "rustls-aws-lc-rs", feature = "rustls-ring"))]
 //! Commonly used code in most examples.
 
+use anza_quinn as quinn;
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 
