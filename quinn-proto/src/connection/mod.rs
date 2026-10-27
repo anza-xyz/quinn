@@ -4149,10 +4149,6 @@ mod tests {
     #[cfg(feature = "rustls-ring")]
     #[test]
     fn large_initial_token_leaves_room_for_close() {
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let mut roots = rustls::RootCertStore::empty();
-        roots.add(cert.cert.der().clone()).unwrap();
-        let config = crate::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
         // With 40 bytes of header overhead, a 16-byte tag, and a 35-byte ACK,
         // a 1084-byte token leaves exactly ConnectionClose::SIZE_BOUND bytes.
         for (token_len, ack_fits) in [
@@ -4163,20 +4159,8 @@ mod tests {
             // Exactly enough frame space for CONNECTION_CLOSE alone.
             (1119, false),
         ] {
-            config
-                .token_store
-                .insert("localhost", vec![0; token_len].into());
-            let mut endpoint =
-                crate::Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
             let now = Instant::now();
-            let (_, mut conn) = endpoint
-                .connect(
-                    now,
-                    config.clone(),
-                    "[::1]:4433".parse().unwrap(),
-                    "localhost",
-                )
-                .unwrap();
+            let mut conn = client_with_initial_token(token_len, now);
             let keys = conn
                 .crypto
                 .initial_keys(&conn.initial_dst_cid, Side::Server);
@@ -4230,6 +4214,23 @@ mod tests {
             );
             assert!(frames.next().is_none());
         }
+    }
+
+    #[cfg(feature = "rustls-ring")]
+    fn client_with_initial_token(token_len: usize, now: Instant) -> Connection {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert.cert.der().clone()).unwrap();
+        let config = crate::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
+        config
+            .token_store
+            .insert("localhost", vec![0; token_len].into());
+        let mut endpoint =
+            crate::Endpoint::new(Arc::new(EndpointConfig::default()), None, true, None);
+        endpoint
+            .connect(now, config, "[::1]:4433".parse().unwrap(), "localhost")
+            .unwrap()
+            .1
     }
 
     #[test]
