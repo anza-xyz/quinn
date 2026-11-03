@@ -149,8 +149,11 @@ impl Connecting {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
         // simple.
-        if let Some(x) = self.handshake_data_ready.take() {
+        if let Some(x) = self.handshake_data_ready.as_mut() {
             let _ = x.await;
+            // Once the data is ready, apply state changes. This prevents a panic due to
+            // inconsistent state when retrying a call to `handshake_data`.
+            self.handshake_data_ready = None;
         }
         let conn = self.conn.as_ref().unwrap();
         let inner = conn.state.lock("handshake");
@@ -264,7 +267,13 @@ impl Future for ConnectionDriver {
             conn.terminate(e, &self.conn.shared);
             return Poll::Ready(Ok(()));
         }
-        let mut keep_going = conn.drive_transmit(cx)?;
+        let mut keep_going = conn.drive_transmit(cx).inspect_err(|_| {
+            // Transmit failed, so close the connection and clean state before returning the error.
+            if !conn.inner.is_closed() {
+                conn.implicit_close(&self.conn.shared);
+            }
+        })?;
+
         // If a timer expires, there might be more to transmit. When we transmit something, we
         // might need to reset a timer. Hence, we must loop until neither happens.
         keep_going |= conn.drive_timer(cx);
@@ -364,6 +373,27 @@ impl Connection {
     pub fn read_datagram(&self) -> ReadDatagram<'_> {
         ReadDatagram {
             conn: &self.0,
+            notify: self.0.shared.datagram_received.notified(),
+        }
+    }
+
+    /// Receive multiple application datagrams
+    ///
+    /// Waits until at least one datagram is available, then fills `bufs` with as many received
+    /// datagrams as fit and returns how many were written. Behaves like calling
+    /// [`read_datagram()`](Self::read_datagram) until no more datagrams are buffered, but takes
+    /// the connection lock once rather than once per datagram, which reduces contention with the
+    /// connection driver and other tasks when datagrams arrive in quick succession.
+    ///
+    /// Returns `Ok(0)` immediately if `bufs` is empty.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancellation safe. If this does not resolve, no datagrams were consumed.
+    pub fn read_datagrams<'a>(&'a self, bufs: &'a mut [Bytes]) -> ReadDatagrams<'a> {
+        ReadDatagrams {
+            conn: &self.0,
+            bufs,
             notify: self.0.shared.datagram_received.notified(),
         }
     }
@@ -826,6 +856,52 @@ impl Future for ReadDatagram<'_> {
         if let Some(x) = state.inner.datagrams().recv() {
             return Poll::Ready(Ok(x));
         } else if let Some(ref e) = state.error {
+            return Poll::Ready(Err(e.clone()));
+        }
+        loop {
+            match this.notify.as_mut().poll(ctx) {
+                // `state` lock ensures we didn't race with readiness
+                Poll::Pending => return Poll::Pending,
+                // Spurious wakeup, get a new future
+                Poll::Ready(()) => this
+                    .notify
+                    .set(this.conn.shared.datagram_received.notified()),
+            }
+        }
+    }
+}
+
+pin_project! {
+    /// Future produced by [`Connection::read_datagrams`]
+    pub struct ReadDatagrams<'a> {
+        conn: &'a ConnectionRef,
+        bufs: &'a mut [Bytes],
+        #[pin]
+        notify: Notified<'a>,
+    }
+}
+
+impl Future for ReadDatagrams<'_> {
+    type Output = Result<usize, ConnectionError>;
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        if this.bufs.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
+        let mut state = this.conn.state.lock("ReadDatagrams::poll");
+        // As in `ReadDatagram`, buffered datagrams take precedence over `state.error`
+        let mut datagrams = state.inner.datagrams();
+        let mut n = 0;
+        for buf in this.bufs.iter_mut() {
+            let Some(x) = datagrams.recv() else {
+                break;
+            };
+            *buf = x;
+            n += 1;
+        }
+        if n > 0 {
+            return Poll::Ready(Ok(n));
+        } else if let Some(e) = &state.error {
             return Poll::Ready(Err(e.clone()));
         }
         loop {

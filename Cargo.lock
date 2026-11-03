@@ -80,6 +80,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "anza-quinn"
+version = "0.11.12-vendor.1"
+dependencies = [
+ "anyhow",
+ "anza-quinn-proto",
+ "async-io",
+ "async-std",
+ "bencher",
+ "bytes",
+ "cfg_aliases",
+ "clap",
+ "crc",
+ "directories-next",
+ "futures-io",
+ "pin-project-lite",
+ "quinn-udp",
+ "rand 0.10.1",
+ "rcgen",
+ "rustc-hash",
+ "rustls",
+ "smol",
+ "socket2 0.6.3",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "url",
+ "web-time",
+]
+
+[[package]]
+name = "anza-quinn-proto"
+version = "0.11.19-vendor.1"
+dependencies = [
+ "aws-lc-rs",
+ "bytes",
+ "fastbloom",
+ "getrandom 0.4.3",
+ "lru-slab",
+ "qlog",
+ "rand 0.10.1",
+ "rand_pcg",
+ "ring",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "slab",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -450,10 +506,10 @@ name = "bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
  "clap",
  "hdrhistogram",
- "quinn",
  "rcgen",
  "rustls",
  "tokio",
@@ -511,8 +567,8 @@ name = "book"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
- "quinn",
  "rcgen",
  "rustls",
 ]
@@ -570,9 +626,9 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "cfg_aliases"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
@@ -1896,12 +1952,12 @@ name = "perf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
+ "anza-quinn-proto",
  "bytes",
  "clap",
  "console-subscriber",
  "hdrhistogram",
- "quinn",
- "quinn-proto",
  "rcgen",
  "rustls",
  "serde",
@@ -2063,38 +2119,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "quinn"
-version = "0.11.12"
-dependencies = [
- "anyhow",
- "async-io",
- "async-std",
- "bencher",
- "bytes",
- "cfg_aliases",
- "clap",
- "crc",
- "directories-next",
- "futures-io",
- "pin-project-lite",
- "quinn-proto",
- "quinn-udp",
- "rand 0.10.1",
- "rcgen",
- "rustc-hash",
- "rustls",
- "smol",
- "socket2 0.5.10",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "url",
- "web-time",
-]
-
-[[package]]
 name = "quinn-proto"
 version = "0.11.18"
 dependencies = [
@@ -2134,10 +2158,10 @@ dependencies = [
  "libc",
  "log",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.3",
  "tokio",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
