@@ -80,6 +80,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "anza-quinn-proto"
+version = "0.11.19-vendor.1"
+dependencies = [
+ "arbitrary",
+ "assert_matches",
+ "aws-lc-rs",
+ "bytes",
+ "fastbloom",
+ "getrandom 0.4.3",
+ "hex-literal",
+ "lazy_static",
+ "lru-slab",
+ "qlog",
+ "rand 0.10.3",
+ "rand_pcg",
+ "rcgen",
+ "ring",
+ "rustc-hash",
+ "rustls",
+ "rustls-pki-types",
+ "rustls-platform-verifier",
+ "slab",
+ "thiserror 2.0.20",
+ "tinyvec",
+ "tracing",
+ "tracing-subscriber",
+ "wasm-bindgen-test",
+ "web-time",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1132,9 +1163,9 @@ dependencies = [
 name = "fuzz"
 version = "0.1.0"
 dependencies = [
+ "anza-quinn-proto",
  "arbitrary",
  "libfuzzer-sys",
- "quinn-proto",
 ]
 
 [[package]]
@@ -1902,12 +1933,12 @@ name = "perf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn-proto",
  "bytes",
  "clap",
  "console-subscriber",
  "hdrhistogram",
  "quinn",
- "quinn-proto",
  "rcgen",
  "rustls",
  "serde",
@@ -2079,6 +2110,7 @@ name = "quinn"
 version = "0.11.12"
 dependencies = [
  "anyhow",
+ "anza-quinn-proto",
  "async-io",
  "async-std",
  "bencher",
@@ -2089,7 +2121,6 @@ dependencies = [
  "directories-next",
  "futures-io",
  "pin-project-lite",
- "quinn-proto",
  "quinn-udp",
  "rand 0.10.3",
  "rcgen",
@@ -2103,37 +2134,6 @@ dependencies = [
  "tracing-futures",
  "tracing-subscriber",
  "url",
- "web-time",
-]
-
-[[package]]
-name = "quinn-proto"
-version = "0.11.19"
-dependencies = [
- "arbitrary",
- "assert_matches",
- "aws-lc-rs",
- "bytes",
- "fastbloom",
- "getrandom 0.4.3",
- "hex-literal",
- "lazy_static",
- "lru-slab",
- "qlog",
- "rand 0.10.3",
- "rand_pcg",
- "rcgen",
- "ring",
- "rustc-hash",
- "rustls",
- "rustls-pki-types",
- "rustls-platform-verifier",
- "slab",
- "thiserror 2.0.20",
- "tinyvec",
- "tracing",
- "tracing-subscriber",
- "wasm-bindgen-test",
  "web-time",
 ]
 
