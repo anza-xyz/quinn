@@ -31,7 +31,7 @@ clap = { workspace = true }
 console-subscriber = { version = "0.4.1", features = ["parking_lot"], optional = true }
 hdrhistogram = { workspace = true }
 quinn = { package = "anza-quinn", path = "../quinn" }
-quinn-proto = { path = "../quinn-proto" }
+quinn-proto = { package = "anza-quinn-proto", version = "=0.11.19-vendor.1" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, optional = true  }
