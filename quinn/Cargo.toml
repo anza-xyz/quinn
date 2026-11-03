@@ -1,6 +1,6 @@
 [package]
-name = "quinn"
-version = "0.11.12"
+name = "anza-quinn"
+version = "0.11.12-vendor.1"
 license.workspace = true
 repository.workspace = true
 description = "Versatile QUIC transport protocol implementation"
