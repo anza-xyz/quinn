@@ -80,6 +80,38 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
+name = "anza-quinn"
+version = "0.11.12-vendor.1"
+dependencies = [
+ "anyhow",
+ "async-io",
+ "async-std",
+ "bencher",
+ "bytes",
+ "cfg_aliases",
+ "clap",
+ "crc",
+ "directories-next",
+ "futures-io",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rand 0.10.1",
+ "rcgen",
+ "rustc-hash",
+ "rustls",
+ "smol",
+ "socket2 0.5.10",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-futures",
+ "tracing-subscriber",
+ "url",
+ "web-time",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -450,10 +482,10 @@ name = "bench"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
  "clap",
  "hdrhistogram",
- "quinn",
  "rcgen",
  "rustls",
  "tokio",
@@ -511,8 +543,8 @@ name = "book"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
- "quinn",
  "rcgen",
  "rustls",
 ]
@@ -1896,11 +1928,11 @@ name = "perf"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "anza-quinn",
  "bytes",
  "clap",
  "console-subscriber",
  "hdrhistogram",
- "quinn",
  "quinn-proto",
  "rcgen",
  "rustls",
@@ -2060,38 +2092,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "smallvec",
-]
-
-[[package]]
-name = "quinn"
-version = "0.11.12"
-dependencies = [
- "anyhow",
- "async-io",
- "async-std",
- "bencher",
- "bytes",
- "cfg_aliases",
- "clap",
- "crc",
- "directories-next",
- "futures-io",
- "pin-project-lite",
- "quinn-proto",
- "quinn-udp",
- "rand 0.10.1",
- "rcgen",
- "rustc-hash",
- "rustls",
- "smol",
- "socket2 0.5.10",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-futures",
- "tracing-subscriber",
- "url",
- "web-time",
 ]
 
 [[package]]
