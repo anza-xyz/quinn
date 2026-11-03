@@ -23,7 +23,7 @@ use crate::{
     cid_generator::ConnectionIdGenerator,
     coding::BufMutExt,
     config::{ClientConfig, EndpointConfig, ServerConfig},
-    connection::{Connection, ConnectionError, SideArgs},
+    connection::{Connection, ConnectionArgs, ConnectionError, SideArgs},
     crypto::{self, Keys, UnsupportedVersion},
     frame,
     packet::{
@@ -356,7 +356,7 @@ impl Endpoint {
         trace!(initial_dcid = %remote_id);
 
         let ch = ConnectionHandle(self.connections.vacant_key());
-        let loc_cid = self.new_cid(ch);
+        let loc_cid = self.new_cid(RouteDatagramTo::Connection(ch));
         let params = TransportParameters::new(
             &config.transport,
             &self.config,
@@ -402,7 +402,7 @@ impl Endpoint {
     ) -> ConnectionEvent {
         let mut ids = vec![];
         for _ in 0..num {
-            let id = self.new_cid(ch);
+            let id = self.new_cid(RouteDatagramTo::Connection(ch));
             let meta = &mut self.connections[ch];
             let sequence = meta.cids_issued;
             meta.cids_issued += 1;
@@ -416,8 +416,8 @@ impl Endpoint {
         ConnectionEvent(ConnectionEventInner::NewIdentifiers(ids, now))
     }
 
-    /// Generate a connection ID for `ch`
-    fn new_cid(&mut self, ch: ConnectionHandle) -> ConnectionId {
+    /// Generate and reserve a local connection ID
+    fn new_cid(&mut self, route_to: RouteDatagramTo) -> ConnectionId {
         loop {
             let cid = self.local_cid_generator.generate_cid();
             if cid.is_empty() {
@@ -426,7 +426,7 @@ impl Endpoint {
                 return cid;
             }
             if let hash_map::Entry::Vacant(e) = self.index.connection_ids.entry(cid) {
-                e.insert(ch);
+                e.insert(route_to);
                 break cid;
             }
         }
@@ -548,19 +548,49 @@ impl Endpoint {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
-    // AcceptError cannot be made smaller without semver breakage
+    ///
+    /// Equivalent to [`start_accept()`](Self::start_accept) followed by [`Accepting::accept()`] and
+    /// [`finish_accept()`](Self::finish_accept).
+    // Keep errors consistent with the semver-stable `accept` API.
     #[allow(clippy::result_large_err)]
     pub fn accept(
+        &mut self,
+        incoming: Incoming,
+        now: Instant,
+        buf: &mut Vec<u8>,
+        server_config: Option<Arc<ServerConfig>>,
+    ) -> Result<(ConnectionHandle, Connection), AcceptError> {
+        let accepting = self.start_accept(incoming, now, buf, server_config)?;
+        self.finish_accept(accepting.accept(), buf)
+    }
+
+    /// Begin accepting this incoming connection, reserving endpoint state for it
+    ///
+    /// This is the first of three phases which together are equivalent to
+    /// [`accept()`](Self::accept). It does only the work that needs the endpoint: validating the
+    /// attempt, issuing connection IDs, and arranging for datagrams addressed to the connection to
+    /// be buffered. TLS session setup, connection construction, and first-packet handling are
+    /// deferred to [`Accepting::accept()`], which does not need the endpoint and can therefore run
+    /// concurrently with other operations on it, e.g. outside a lock guarding it. The result must
+    /// then be passed to [`finish_accept()`](Self::finish_accept) on this endpoint, which registers
+    /// the connection and delivers the buffered datagrams to it, or releases the reserved state if
+    /// the handshake failed.
+    ///
+    /// Until `finish_accept`, the attempt counts toward [`ServerConfig::max_incoming()`], and
+    /// datagrams buffered for it toward [`ServerConfig::incoming_buffer_size()`] and
+    /// [`ServerConfig::incoming_buffer_size_total()`].
+    ///
+    /// On error, no endpoint state remains reserved for the attempt.
+    // Keep errors consistent with the semver-stable `accept` API.
+    #[allow(clippy::result_large_err)]
+    pub fn start_accept(
         &mut self,
         mut incoming: Incoming,
         now: Instant,
         buf: &mut Vec<u8>,
         server_config: Option<Arc<ServerConfig>>,
-    ) -> Result<(ConnectionHandle, Connection), AcceptError> {
+    ) -> Result<Accepting, AcceptError> {
         let remote_address_validated = incoming.remote_address_validated();
-        incoming.improper_drop_warner.dismiss();
-        let incoming_buffer = self.incoming_buffers.remove(incoming.incoming_idx);
-        self.all_incoming_buffers_total_bytes -= incoming_buffer.total_bytes;
 
         let packet_number = incoming.packet.header.number.expand(0);
         let InitialHeader {
@@ -569,17 +599,22 @@ impl Endpoint {
             version,
             ..
         } = incoming.packet.header;
-        let server_config = server_config.unwrap_or_else(|| incoming_buffer.server_config.clone());
+        let server_config = server_config.unwrap_or_else(|| {
+            self.incoming_buffers[incoming.incoming_idx]
+                .server_config
+                .clone()
+        });
 
         if server_config
             .transport
             .max_idle_timeout
             .is_some_and(|timeout| {
-                incoming.received_at + Duration::from_millis(timeout.into()) <= now
+                timeout.into_inner() != 0
+                    && incoming.received_at + Duration::from_millis(timeout.into()) <= now
             })
         {
             debug!("abandoning accept of stale initial");
-            self.index.remove_initial(dst_cid);
+            self.ignore(incoming);
             return Err(AcceptError {
                 cause: ConnectionError::TimedOut,
                 response: None,
@@ -588,17 +623,18 @@ impl Endpoint {
 
         if self.cids_exhausted() {
             debug!("refusing connection");
-            self.index.remove_initial(dst_cid);
+            let response = self.initial_close(
+                version,
+                incoming.addresses,
+                &incoming.crypto,
+                &src_cid,
+                TransportError::CONNECTION_REFUSED(""),
+                buf,
+            );
+            self.ignore(incoming);
             return Err(AcceptError {
                 cause: ConnectionError::CidsExhausted,
-                response: Some(self.initial_close(
-                    version,
-                    incoming.addresses,
-                    &incoming.crypto,
-                    &src_cid,
-                    TransportError::CONNECTION_REFUSED(""),
-                    buf,
-                )),
+                response: Some(response),
             });
         }
 
@@ -614,15 +650,14 @@ impl Endpoint {
             .is_err()
         {
             debug!(packet_number, "failed to authenticate initial packet");
-            self.index.remove_initial(dst_cid);
+            self.ignore(incoming);
             return Err(AcceptError {
                 cause: TransportError::PROTOCOL_VIOLATION("authentication failed").into(),
                 response: None,
             });
         };
 
-        let ch = ConnectionHandle(self.connections.vacant_key());
-        let loc_cid = self.new_cid(ch);
+        let loc_cid = self.new_cid(RouteDatagramTo::Incoming(incoming.incoming_idx));
         let mut params = TransportParameters::new(
             &server_config.transport,
             &self.config,
@@ -636,7 +671,7 @@ impl Endpoint {
         params.retry_src_cid = incoming.token.retry_src_cid;
         let mut pref_addr_cid = None;
         if server_config.has_preferred_address() {
-            let cid = self.new_cid(ch);
+            let cid = self.new_cid(RouteDatagramTo::Incoming(incoming.incoming_idx));
             pref_addr_cid = Some(cid);
             params.preferred_address = Some(PreferredAddress {
                 address_v4: server_config.preferred_address_v4,
@@ -646,60 +681,130 @@ impl Endpoint {
             });
         }
 
-        let tls = server_config.crypto.clone().start_session(version, &params);
-        let transport_config = server_config.transport.clone();
-        let mut conn = self.add_connection(
-            ch,
-            version,
-            dst_cid,
+        // The attempt is now committed: the `Incoming` is consumed, and the state reserved above is
+        // released only by `finish_accept`.
+        let Incoming {
+            received_at,
+            addresses,
+            ecn,
+            packet,
+            rest,
+            crypto,
+            incoming_idx,
+            improper_drop_warner,
+            ..
+        } = incoming;
+        improper_drop_warner.dismiss();
+
+        let mut rng_seed = [0; 32];
+        self.rng.fill_bytes(&mut rng_seed);
+        let server_crypto = server_config.crypto.clone();
+        let args = ConnectionArgs {
+            endpoint_config: self.config.clone(),
+            transport_config: server_config.transport.clone(),
+            init_cid: dst_cid,
             loc_cid,
-            src_cid,
-            incoming.addresses,
-            incoming.received_at,
-            tls,
-            transport_config,
-            SideArgs::Server {
+            rem_cid: src_cid,
+            remote: addresses.remote,
+            local_ip: addresses.local_ip,
+            local_cid_len: self.local_cid_generator.cid_len(),
+            local_cid_lifetime: self.local_cid_generator.cid_lifetime(),
+            now: received_at,
+            version,
+            allow_mtud: self.allow_mtud,
+            rng_seed,
+            side_args: SideArgs::Server {
                 server_config,
                 pref_addr_cid,
                 path_validated: remote_address_validated,
             },
-        );
-        self.index.insert_initial(dst_cid, ch);
+        };
 
-        match conn.handle_first_packet(
-            incoming.received_at,
-            incoming.addresses.remote,
-            incoming.ecn,
+        Ok(Accepting {
+            incoming_idx,
             packet_number,
-            incoming.packet,
-            incoming.rest,
-        ) {
-            Ok(()) => {
-                trace!(id = ch.0, icid = %dst_cid, "new connection");
+            packet,
+            rest,
+            ecn,
+            crypto,
+            server_crypto,
+            params,
+            args,
+            guard: AcceptDropGuard,
+        })
+    }
 
-                for event in incoming_buffer.datagrams {
-                    conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event)))
-                }
+    /// Complete acceptance of a connection begun by [`start_accept()`](Self::start_accept)
+    ///
+    /// Must be called on the same endpoint. On success, the connection is registered with the
+    /// endpoint and any datagrams for it that arrived since `start_accept` are delivered to it.
+    /// On failure, the state reserved by `start_accept` is released, and `buf` may be populated
+    /// with a close packet to send to the peer, as for [`accept()`](Self::accept).
+    // Keep errors consistent with the semver-stable `accept` API.
+    #[allow(clippy::result_large_err)]
+    pub fn finish_accept(
+        &mut self,
+        accepted: Accepted,
+        buf: &mut Vec<u8>,
+    ) -> Result<(ConnectionHandle, Connection), AcceptError> {
+        let Accepted {
+            incoming_idx,
+            init_cid,
+            loc_cid,
+            pref_addr_cid,
+            addresses,
+            version,
+            src_cid,
+            crypto,
+            result,
+            guard,
+        } = accepted;
+        guard.dismiss();
 
-                Ok((ch, conn))
-            }
-            Err(e) => {
-                debug!("handshake failed: {}", e);
-                self.handle_event(ch, EndpointEvent(EndpointEventInner::Drained));
-                let response = match e {
-                    ConnectionError::TransportError(ref e) => Some(self.initial_close(
+        let mut conn = match result {
+            Ok(conn) => conn,
+            Err(cause) => {
+                debug!("handshake failed: {}", cause);
+                let response = match &cause {
+                    ConnectionError::TransportError(e) => Some(self.initial_close(
                         version,
-                        incoming.addresses,
-                        &incoming.crypto,
+                        addresses,
+                        &crypto,
                         &src_cid,
                         e.clone(),
                         buf,
                     )),
                     _ => None,
                 };
-                Err(AcceptError { cause: e, response })
+                // Release the routes and buffer slot reserved by `start_accept`
+                self.index.remove_initial(init_cid);
+                self.index.retire(loc_cid);
+                if let Some(cid) = pref_addr_cid {
+                    self.index.retire(cid);
+                }
+                self.remove_incoming_buffer(incoming_idx);
+                return Err(AcceptError { cause, response });
             }
+        };
+
+        let incoming_buffer = self.remove_incoming_buffer(incoming_idx);
+        let ch = ConnectionHandle(self.connections.vacant_key());
+        // Re-points the routes reserved by `start_accept` at the connection
+        self.register_connection(
+            ch,
+            init_cid,
+            loc_cid,
+            pref_addr_cid,
+            addresses,
+            Side::Server,
+        );
+        trace!(id = ch.0, icid = %init_cid, "new connection");
+
+        for event in incoming_buffer.datagrams {
+            conn.handle_event(ConnectionEvent(ConnectionEventInner::Datagram(event)))
         }
+
+        Ok((ch, conn))
     }
 
     /// Check if we should refuse a connection attempt regardless of the packet's contents
@@ -729,7 +834,7 @@ impl Endpoint {
 
     /// Reject this incoming connection attempt
     pub fn refuse(&mut self, incoming: Incoming, buf: &mut Vec<u8>) -> Transmit {
-        self.clean_up_incoming(&incoming);
+        self.remove_incoming_state(&incoming);
         incoming.improper_drop_warner.dismiss();
 
         self.initial_close(
@@ -753,7 +858,7 @@ impl Endpoint {
         let server_config = self.incoming_buffers[incoming.incoming_idx]
             .server_config
             .clone();
-        self.clean_up_incoming(&incoming);
+        self.remove_incoming_state(&incoming);
         incoming.improper_drop_warner.dismiss();
 
         // First Initial
@@ -800,15 +905,20 @@ impl Endpoint {
     /// Doing this actively, rather than merely dropping the [`Incoming`], is necessary to prevent
     /// memory leaks due to state within [`Endpoint`] tracking the incoming connection.
     pub fn ignore(&mut self, incoming: Incoming) {
-        self.clean_up_incoming(&incoming);
+        self.remove_incoming_state(&incoming);
         incoming.improper_drop_warner.dismiss();
     }
 
-    /// Clean up endpoint data structures associated with an `Incoming`.
-    fn clean_up_incoming(&mut self, incoming: &Incoming) {
+    /// Remove endpoint state associated with an `Incoming`.
+    fn remove_incoming_state(&mut self, incoming: &Incoming) {
         self.index.remove_initial(incoming.packet.header.dst_cid);
-        let incoming_buffer = self.incoming_buffers.remove(incoming.incoming_idx);
+        self.remove_incoming_buffer(incoming.incoming_idx);
+    }
+
+    fn remove_incoming_buffer(&mut self, incoming_idx: usize) -> IncomingBuffer {
+        let incoming_buffer = self.incoming_buffers.remove(incoming_idx);
         self.all_incoming_buffers_total_bytes -= incoming_buffer.total_bytes;
+        incoming_buffer
     }
 
     fn add_connection(
@@ -829,22 +939,40 @@ impl Endpoint {
         let side = side_args.side();
         let pref_addr_cid = side_args.pref_addr_cid();
         let conn = Connection::new(
-            self.config.clone(),
-            transport_config,
-            init_cid,
-            loc_cid,
-            rem_cid,
-            addresses.remote,
-            addresses.local_ip,
             tls,
-            self.local_cid_generator.as_ref(),
-            now,
-            version,
-            self.allow_mtud,
-            rng_seed,
-            side_args,
+            ConnectionArgs {
+                endpoint_config: self.config.clone(),
+                transport_config,
+                init_cid,
+                loc_cid,
+                rem_cid,
+                remote: addresses.remote,
+                local_ip: addresses.local_ip,
+                local_cid_len: self.local_cid_generator.cid_len(),
+                local_cid_lifetime: self.local_cid_generator.cid_lifetime(),
+                now,
+                version,
+                allow_mtud: self.allow_mtud,
+                rng_seed,
+                side_args,
+            },
         );
 
+        self.register_connection(ch, init_cid, loc_cid, pref_addr_cid, addresses, side);
+
+        conn
+    }
+
+    /// Register endpoint-owned metadata and routes for an active connection.
+    fn register_connection(
+        &mut self,
+        ch: ConnectionHandle,
+        init_cid: ConnectionId,
+        loc_cid: ConnectionId,
+        pref_addr_cid: Option<ConnectionId>,
+        addresses: FourTuple,
+        side: Side,
+    ) {
         let mut cids_issued = 0;
         let mut loc_cids = FxHashMap::default();
 
@@ -867,9 +995,30 @@ impl Endpoint {
         });
         debug_assert_eq!(id, ch.0, "connection handle allocation out of sync");
 
-        self.index.insert_conn(addresses, loc_cid, ch, side);
-
-        conn
+        let conn_meta = &self.connections[ch];
+        if conn_meta.side.is_server() {
+            self.index.insert_initial(conn_meta.init_cid, ch);
+        }
+        for cid in conn_meta.loc_cids.values() {
+            if cid.is_empty() {
+                match conn_meta.side {
+                    Side::Server => {
+                        self.index
+                            .incoming_connection_remotes
+                            .insert(conn_meta.addresses, ch);
+                    }
+                    Side::Client => {
+                        self.index
+                            .outgoing_connection_remotes
+                            .insert(conn_meta.addresses.remote, ch);
+                    }
+                }
+            } else {
+                self.index
+                    .connection_ids
+                    .insert(*cid, RouteDatagramTo::Connection(ch));
+            }
+        }
     }
 
     fn initial_close(
@@ -921,6 +1070,7 @@ impl Endpoint {
 
     /// Counter for the number of bytes currently used
     /// in the buffers for Initial and 0-RTT messages for pending incoming connections
+    /// and accepts that are still being finalized
     pub fn incoming_buffer_bytes(&self) -> u64 {
         self.all_incoming_buffers_total_bytes
     }
@@ -999,7 +1149,7 @@ struct ConnectionIndex {
     /// Identifies connections based on locally created CIDs
     ///
     /// Uses a cheaper hash function since keys are locally created
-    connection_ids: FxHashMap<ConnectionId, ConnectionHandle>,
+    connection_ids: FxHashMap<ConnectionId, RouteDatagramTo>,
     /// Identifies incoming connections with zero-length CIDs
     ///
     /// Uses a standard `HashMap` to protect against hash collision attacks.
@@ -1048,32 +1198,6 @@ impl ConnectionIndex {
             .insert(dst_cid, RouteDatagramTo::Connection(connection));
     }
 
-    /// Associate a connection with its first locally-chosen destination CID if used, or otherwise
-    /// its current 4-tuple
-    fn insert_conn(
-        &mut self,
-        addresses: FourTuple,
-        dst_cid: ConnectionId,
-        connection: ConnectionHandle,
-        side: Side,
-    ) {
-        match dst_cid.len() {
-            0 => match side {
-                Side::Server => {
-                    self.incoming_connection_remotes
-                        .insert(addresses, connection);
-                }
-                Side::Client => {
-                    self.outgoing_connection_remotes
-                        .insert(addresses.remote, connection);
-                }
-            },
-            _ => {
-                self.connection_ids.insert(dst_cid, connection);
-            }
-        }
-    }
-
     /// Discard a connection ID
     fn retire(&mut self, dst_cid: ConnectionId) {
         self.connection_ids.remove(&dst_cid);
@@ -1098,13 +1222,13 @@ impl ConnectionIndex {
     /// Find the existing connection that `datagram` should be routed to, if any
     fn get(&self, addresses: &FourTuple, datagram: &PartialDecode) -> Option<RouteDatagramTo> {
         if !datagram.dst_cid().is_empty() {
-            if let Some(&ch) = self.connection_ids.get(datagram.dst_cid()) {
-                return Some(RouteDatagramTo::Connection(ch));
+            if let Some(&route) = self.connection_ids.get(datagram.dst_cid()) {
+                return Some(route);
             }
         }
         if datagram.is_initial() || datagram.is_0rtt() {
-            if let Some(&ch) = self.connection_ids_initial.get(datagram.dst_cid()) {
-                return Some(ch);
+            if let Some(&route) = self.connection_ids_initial.get(datagram.dst_cid()) {
+                return Some(route);
             }
         }
         if datagram.dst_cid().is_empty() {
@@ -1258,6 +1382,25 @@ impl Drop for IncomingImproperDropWarner {
     }
 }
 
+/// Warns when an [`Accepting`] or [`Accepted`] is dropped before [`Endpoint::finish_accept()`]
+struct AcceptDropGuard;
+
+impl AcceptDropGuard {
+    fn dismiss(self) {
+        mem::forget(self);
+    }
+}
+
+impl Drop for AcceptDropGuard {
+    fn drop(&mut self) {
+        warn!(
+            "quinn_proto::Accepting or Accepted dropped before reaching Endpoint::finish_accept \
+             (leaks connection IDs and buffered datagrams, and may cause eventual inability to \
+             accept new connections)"
+        );
+    }
+}
+
 /// Errors in the parameters being used to create a new connection
 ///
 /// These arise before any I/O has been performed.
@@ -1298,6 +1441,123 @@ pub struct AcceptError {
     pub cause: ConnectionError,
     /// Optional response to transmit back
     pub response: Option<Transmit>,
+}
+
+/// An incoming connection whose acceptance has begun, see [`Endpoint::start_accept()`]
+///
+/// Call [`accept()`](Self::accept) to construct the connection, and pass the result to
+/// [`Endpoint::finish_accept()`]. Dropping this instead leaks the endpoint state reserved for the
+/// connection, which is reported with a warning.
+#[must_use = "must be completed with `Accepting::accept` and `Endpoint::finish_accept`"]
+pub struct Accepting {
+    incoming_idx: usize,
+    // The first packet, processed once the connection is constructed
+    packet_number: u64,
+    packet: InitialPacket,
+    rest: Option<BytesMut>,
+    ecn: Option<EcnCodepoint>,
+    // Initial keys, retained to send a close if the handshake fails
+    crypto: Keys,
+    // Inputs to connection construction
+    server_crypto: Arc<dyn crypto::ServerConfig>,
+    params: TransportParameters,
+    args: ConnectionArgs,
+    guard: AcceptDropGuard,
+}
+
+impl Accepting {
+    /// Construct the connection and process its first packet
+    ///
+    /// This is the computationally expensive part of accepting a connection and requires no
+    /// access to the [`Endpoint`]. The result must be passed to [`Endpoint::finish_accept()`]
+    /// whether or not the first packet was processed successfully.
+    pub fn accept(self) -> Accepted {
+        let Self {
+            incoming_idx,
+            packet_number,
+            packet,
+            rest,
+            ecn,
+            crypto,
+            server_crypto,
+            params,
+            args,
+            guard,
+        } = self;
+        // Copy out what `finish_accept` needs before `args` is consumed
+        let &ConnectionArgs {
+            init_cid,
+            loc_cid,
+            rem_cid: src_cid,
+            remote,
+            local_ip,
+            now,
+            version,
+            ..
+        } = &args;
+        let pref_addr_cid = args.side_args.pref_addr_cid();
+
+        let tls = server_crypto.start_session(version, &params);
+        let mut conn = Connection::new(tls, args);
+        let result = conn
+            .handle_first_packet(now, remote, ecn, packet_number, packet, rest)
+            .map(|()| conn);
+
+        Accepted {
+            incoming_idx,
+            init_cid,
+            loc_cid,
+            pref_addr_cid,
+            addresses: FourTuple { remote, local_ip },
+            version,
+            src_cid,
+            crypto,
+            result,
+            guard,
+        }
+    }
+}
+
+impl fmt::Debug for Accepting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Accepting")
+            .field("incoming_idx", &self.incoming_idx)
+            .field("init_cid", &self.args.init_cid)
+            .field("remote", &self.args.remote)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The outcome of [`Accepting::accept()`], to be passed to [`Endpoint::finish_accept()`]
+///
+/// Dropping this leaks the endpoint state reserved for the connection, which is reported with a
+/// warning.
+#[must_use = "must be passed to `Endpoint::finish_accept`"]
+pub struct Accepted {
+    // Endpoint state reserved by `start_accept`, re-pointed at the connection or released by
+    // `finish_accept`
+    incoming_idx: usize,
+    init_cid: ConnectionId,
+    loc_cid: ConnectionId,
+    pref_addr_cid: Option<ConnectionId>,
+    addresses: FourTuple,
+    // For the close response if the handshake failed
+    version: u32,
+    src_cid: ConnectionId,
+    crypto: Keys,
+    result: Result<Connection, ConnectionError>,
+    guard: AcceptDropGuard,
+}
+
+impl fmt::Debug for Accepted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Accepted")
+            .field("incoming_idx", &self.incoming_idx)
+            .field("init_cid", &self.init_cid)
+            .field("remote", &self.addresses.remote)
+            .field("result", &self.result)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Error for attempting to retry an [`Incoming`] which already bears a token from a previous retry

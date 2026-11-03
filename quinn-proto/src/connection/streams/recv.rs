@@ -93,8 +93,11 @@ impl Recv {
 
         self.stopped = true;
         self.assembler.clear();
-        // Issue flow control credit for unread data
-        let read_credits = self.end - self.assembler.bytes_read();
+        // Issue flow control credit for unread data, unless a reset already did
+        let read_credits = match self.state {
+            RecvState::ResetRecvd { .. } => 0,
+            _ => self.end - self.assembler.bytes_read(),
+        };
         // This may send a spurious STOP_SENDING if we've already received all data, but it's a bit
         // fiddly to distinguish that from the case where we've received a FIN but are missing some
         // data that the peer might still be trying to retransmit, in which case a STOP_SENDING is
@@ -265,13 +268,12 @@ impl<'a> Chunks<'a> {
             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),
         };
 
-        let mut recv =
-            match get_or_insert_recv(streams.stream_receive_window)(entry.get_mut()).stopped {
-                true => return Err(ReadableError::ClosedStream),
-                false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
-            };
-
+        let recv = get_or_insert_recv(streams.stream_receive_window)(entry.get_mut());
+        if recv.stopped {
+            return Err(ReadableError::ClosedStream);
+        }
         recv.assembler.ensure_ordering(ordered)?;
+        let recv = entry.remove().unwrap().into_inner(); // initialized above
         Ok(Self {
             id,
             ordered,
