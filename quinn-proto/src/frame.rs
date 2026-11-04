@@ -381,16 +381,45 @@ impl<'a> IntoIterator for &'a Ack {
 }
 
 impl Ack {
+    /// Encode as many ranges as fit in `max_size` bytes, starting with the largest.
+    /// Returns false without writing anything if even the first range does not fit.
     pub fn encode<W: BufMut>(
         delay: u64,
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
         buf: &mut W,
-    ) {
+        max_size: usize,
+    ) -> bool {
         let mut rest = ranges.iter().rev();
         let first = rest.next().unwrap();
         let largest = first.end - 1;
         let first_size = first.end - first.start;
+        let var_size = |x| VarInt::from_u64(x).unwrap().size();
+        let mut size = 1 + var_size(largest) + var_size(delay) + 1 + var_size(first_size - 1);
+        if let Some(ecn) = ecn {
+            size += var_size(ecn.ect0) + var_size(ecn.ect1) + var_size(ecn.ce);
+        }
+        if size > max_size {
+            return false;
+        }
+
+        // Determine the range count before encoding it, including any growth in its varint.
+        let mut additional = 0;
+        let mut prev = first.start;
+        for block in rest.clone() {
+            let next_size = size
+                + var_size(prev - block.end - 1)
+                + var_size(block.end - block.start - 1)
+                + var_size(additional + 1)
+                - var_size(additional);
+            if next_size > max_size {
+                break;
+            }
+            size = next_size;
+            additional += 1;
+            prev = block.start;
+        }
+
         buf.write(if ecn.is_some() {
             FrameType::ACK_ECN
         } else {
@@ -398,10 +427,10 @@ impl Ack {
         });
         buf.write_var(largest);
         buf.write_var(delay);
-        buf.write_var(ranges.len() as u64 - 1);
+        buf.write_var(additional);
         buf.write_var(first_size - 1);
         let mut prev = first.start;
-        for block in rest {
+        for block in rest.take(additional as usize) {
             let size = block.end - block.start;
             buf.write_var(prev - block.end - 1);
             buf.write_var(size - 1);
@@ -410,11 +439,19 @@ impl Ack {
         if let Some(x) = ecn {
             x.encode(buf)
         }
+        true
     }
 
     pub fn iter(&self) -> AckIter<'_> {
         self.into_iter()
     }
+
+    /// Space sufficient for one complete ACK range, including ECN counts.
+    ///
+    /// One byte for the frame type, eight each for Largest Acknowledged and ACK Delay,
+    /// one for ACK Range Count (zero additional ranges), eight for First ACK Range,
+    /// and eight for each of the three ECN counters.
+    pub(crate) const SINGLE_RANGE_SIZE_BOUND: usize = 1 + 8 + 8 + 1 + 8 + 3 * 8;
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -1040,7 +1077,7 @@ mod test {
             ect1: 24,
             ce: 12,
         };
-        Ack::encode(42, &ranges, Some(&ECN), &mut buf);
+        assert!(Ack::encode(42, &ranges, Some(&ECN), &mut buf, usize::MAX));
         let frames = frames(buf);
         assert_eq!(frames.len(), 1);
         match frames[0] {
@@ -1052,6 +1089,96 @@ mod test {
             }
             ref x => panic!("incorrect frame {x:?}"),
         }
+    }
+
+    #[test]
+    fn ack_budget() {
+        // 65 ranges exercise both sides of the range-count varint boundary (1 or 2 bytes).
+        const RANGE_COUNT: usize = 65;
+        let mut ranges = ArrayRangeSet::new();
+        for i in 0..RANGE_COUNT {
+            // Leave a one-packet gap so every packet forms a separate range.
+            ranges.insert_one(2 * i as u64);
+        }
+        for ecn in [None, Some(EcnCounts::ZERO)] {
+            // One byte each for type, delay, range count, and first range length, plus two
+            // for Largest Acknowledged. Zero ECN counters add one byte each.
+            let base_size = 6 + if ecn.is_some() { 3 } else { 0 };
+            // Two bytes per additional range, plus one for the range-count varint's growth.
+            let full_size = base_size + 2 * (RANGE_COUNT - 1) + 1;
+            // Include insufficient budgets, exact fits, and spare space after all ranges fit.
+            for budget in 0..=full_size + 1 {
+                // An existing buffer prefix must remain unchanged if no range fits. The ACK
+                // starts after this sentinel, which is excluded when decoding below.
+                let mut buf = vec![0xff];
+                let fits = Ack::encode(0, &ranges, ecn.as_ref(), &mut buf, budget);
+                if budget < base_size {
+                    assert!(!fits);
+                    assert_eq!(buf, [0xff]);
+                    continue;
+                }
+                assert!(fits);
+                assert!(buf.len() - 1 <= budget);
+                // Each additional range costs two bytes. At 64 additional ranges, the
+                // range-count varint also needs one extra byte.
+                let remaining = budget - base_size;
+                let expected_count =
+                    (1 + (remaining - usize::from(remaining >= 2 * 64)) / 2).min(RANGE_COUNT);
+                let decoded = frames(buf[1..].to_vec());
+                let Frame::Ack(ack) = &decoded[0] else {
+                    panic!("expected ACK");
+                };
+                assert_eq!(ack.largest, 2 * (RANGE_COUNT - 1) as u64);
+                assert_eq!(ack.ecn, ecn);
+                assert_eq!(
+                    ack.iter().collect::<Vec<_>>(),
+                    ranges
+                        .iter()
+                        .rev()
+                        .take(expected_count)
+                        .map(|range| range.start..=range.end - 1)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ack_single_range_bound() {
+        let max = VarInt::MAX.into_inner();
+        let mut ranges = ArrayRangeSet::new();
+        ranges.insert(0..max);
+        let ecn = EcnCounts {
+            ect0: max,
+            ect1: max,
+            ce: max,
+        };
+        let mut buf = Vec::new();
+        assert!(!Ack::encode(
+            max,
+            &ranges,
+            Some(&ecn),
+            &mut buf,
+            Ack::SINGLE_RANGE_SIZE_BOUND - 1
+        ));
+        assert!(buf.is_empty());
+        assert!(Ack::encode(
+            max,
+            &ranges,
+            Some(&ecn),
+            &mut buf,
+            Ack::SINGLE_RANGE_SIZE_BOUND
+        ));
+        assert_eq!(buf.len(), Ack::SINGLE_RANGE_SIZE_BOUND);
+        let decoded = frames(buf);
+        let Frame::Ack(ack) = &decoded[0] else {
+            panic!("expected ACK")
+        };
+        let mut acked = ack.iter();
+        assert_eq!(acked.next(), Some(0..=max - 1));
+        assert_eq!(acked.next(), None);
+        assert_eq!(ack.delay, max);
+        assert_eq!(ack.ecn, Some(ecn));
     }
 
     #[test]

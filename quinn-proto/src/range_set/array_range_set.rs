@@ -44,7 +44,7 @@ impl ArrayRangeSet {
         Default::default()
     }
 
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Range<u64>> + '_ {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = Range<u64>> + Clone + '_ {
         self.0.iter().cloned()
     }
 

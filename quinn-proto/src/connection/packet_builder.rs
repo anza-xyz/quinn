@@ -154,13 +154,15 @@ impl PacketBuilder {
         );
         let max_size = buffer_capacity.saturating_sub(tag_len);
         // A peer-provided Initial token can consume the space needed after the header.
-        // Leave room for both a CONNECTION_CLOSE and a CRYPTO frame with data. The
+        // Leave room for PING, CONNECTION_CLOSE, CRYPTO with data, or one ACK range with ECN.
+        // PING needs only one byte and is covered by the other bounds. The
         // CRYPTO writer uses a strict `< max_size` check, hence the extra byte;
         // CONNECTION_CLOSE can exactly fill the available space.
         let required_frame_space = Ord::max(
             frame::Crypto::SIZE_BOUND + 1,
             frame::ConnectionClose::SIZE_BOUND,
-        );
+        )
+        .max(frame::Ack::SINGLE_RANGE_SIZE_BOUND);
         if space_id == SpaceId::Initial
             && (max_size < min_size || max_size.saturating_sub(buffer.len()) < required_frame_space)
         {
