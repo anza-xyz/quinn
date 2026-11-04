@@ -30,8 +30,8 @@ bytes = { workspace = true }
 clap = { workspace = true }
 console-subscriber = { version = "0.4.1", features = ["parking_lot"], optional = true }
 hdrhistogram = { workspace = true }
-quinn = { path = "../quinn" }
-quinn-proto = { path = "../quinn-proto" }
+quinn = { package = "anza-quinn", path = "../quinn" }
+quinn-proto = { package = "anza-quinn-proto", path = "../quinn-proto" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true, optional = true  }
