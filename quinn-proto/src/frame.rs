@@ -1174,7 +1174,9 @@ mod test {
         let Frame::Ack(ack) = &decoded[0] else {
             panic!("expected ACK")
         };
-        assert_eq!(ack.iter().collect::<Vec<_>>(), [0..=max - 1]);
+        let mut acked = ack.iter();
+        assert_eq!(acked.next(), Some(0..=max - 1));
+        assert_eq!(acked.next(), None);
         assert_eq!(ack.delay, max);
         assert_eq!(ack.ecn, Some(ecn));
     }
