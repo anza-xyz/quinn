@@ -844,9 +844,14 @@ impl RecvState {
                 Poll::Ready(Ok(msgs)) => {
                     self.recv_limiter.record_work(msgs);
                     for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
-                        let mut data: BytesMut = buf[0..meta.len].into();
+                        let mut data = &buf[0..meta.len];
                         while !data.is_empty() {
-                            let buf = data.split_to(meta.stride.min(data.len()));
+                            // Copy each datagram (each GRO segment) into its own allocation, so
+                            // that data retained downstream, e.g. unread stream data, keeps only
+                            // its own datagram allocated rather than the whole GRO batch.
+                            let (datagram, rest) = data.split_at(meta.stride.min(data.len()));
+                            data = rest;
+                            let buf = BytesMut::from(datagram);
                             let mut response_buffer = Vec::new();
                             match endpoint.handle(
                                 now,
