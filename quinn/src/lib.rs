@@ -47,6 +47,7 @@ mod connection;
 mod endpoint;
 mod incoming;
 mod mutex;
+mod recv_buffers;
 mod recv_stream;
 mod runtime;
 mod send_stream;
@@ -80,6 +81,7 @@ pub use crate::connection::{
 };
 pub use crate::endpoint::{Accept, Endpoint, EndpointStats};
 pub use crate::incoming::{Incoming, IncomingFuture, RetryError};
+pub use crate::recv_buffers::RecvBuffers;
 pub use crate::recv_stream::{ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError};
 #[cfg(feature = "runtime-async-std")]
 pub use crate::runtime::AsyncStdRuntime;

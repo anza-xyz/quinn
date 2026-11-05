@@ -21,7 +21,7 @@ use std::{
 
 use crate::runtime::{AsyncTimer, AsyncUdpSocket, Runtime as _, TokioRuntime, UdpPoller};
 use crate::{Duration, Instant};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use proto::{
     ConnectionId, RandomConnectionIdGenerator,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
@@ -43,7 +43,9 @@ use tracing_futures::Instrument as _;
 use tracing_subscriber::EnvFilter;
 use udp::RecvMeta;
 
-use super::{ClientConfig, Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
+use super::{
+    ClientConfig, Endpoint, EndpointConfig, RecvBuffers, RecvStream, SendStream, TransportConfig,
+};
 
 #[test]
 fn handshake_timeout() {
@@ -179,6 +181,58 @@ fn read_after_close() {
         let msg = stream.read_to_end(usize::MAX).await.expect("read_to_end");
         assert_eq!(msg, MSG);
     });
+}
+
+/// Counts the datagrams copied through it
+struct CountingRecvBuffers(Arc<AtomicUsize>);
+
+impl RecvBuffers for CountingRecvBuffers {
+    fn copy_datagram(&mut self, datagram: &[u8]) -> BytesMut {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        BytesMut::from(datagram)
+    }
+}
+
+#[test]
+fn custom_recv_buffers() {
+    let _guard = subscribe();
+    let runtime = rt_basic();
+    let endpoint = {
+        let _guard = runtime.enter();
+        endpoint()
+    };
+    let copied = Arc::new(AtomicUsize::new(0));
+    endpoint.set_recv_buffers(Box::new(CountingRecvBuffers(copied.clone())));
+
+    let msg = (0..100_000u32).map(|i| i as u8).collect::<Vec<_>>();
+    let endpoint2 = endpoint.clone();
+    let sent = msg.clone();
+    runtime.spawn(async move {
+        let conn = endpoint2
+            .accept()
+            .await
+            .expect("endpoint")
+            .await
+            .expect("connection");
+        let mut stream = conn.open_uni().await.unwrap();
+        stream.write_all(&sent).await.unwrap();
+        stream.finish().unwrap();
+        _ = stream.stopped().await;
+    });
+    runtime.block_on(async move {
+        let conn = endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap()
+            .await
+            .expect("connect");
+        let mut stream = conn.accept_uni().await.expect("incoming streams");
+        let received = stream.read_to_end(usize::MAX).await.expect("read_to_end");
+        assert_eq!(received, msg);
+    });
+
+    // The endpoint talks to itself, so both sides' datagrams went through the custom buffers,
+    // including the ~80 carrying the stream data
+    assert!(copied.load(Ordering::Relaxed) >= 80);
 }
 
 #[test]

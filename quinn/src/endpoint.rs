@@ -22,7 +22,7 @@ use crate::{
     runtime::{AsyncUdpSocket, Runtime},
     udp_transmit,
 };
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use pin_project_lite::pin_project;
 use proto::{
     self as proto, ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent,
@@ -37,7 +37,10 @@ use udp::{BATCH_SIZE, RecvMeta};
 
 use crate::{
     ConnectionEvent, EndpointConfig, IO_LOOP_BOUND, RECV_TIME_BOUND, VarInt,
-    connection::Connecting, incoming::Incoming, work_limiter::WorkLimiter,
+    connection::Connecting,
+    incoming::Incoming,
+    recv_buffers::{AllocatingRecvBuffers, RecvBuffers},
+    work_limiter::WorkLimiter,
 };
 
 /// A QUIC endpoint.
@@ -235,6 +238,14 @@ impl Endpoint {
             .recv_state
             .connections
             .insert(ch, conn, socket, false, self.runtime.clone()))
+    }
+
+    /// Replace the buffers that received datagrams are copied into
+    ///
+    /// See [`RecvBuffers`] for details. Datagrams received before this is called are copied using
+    /// the default implementation, which copies each datagram into its own allocation.
+    pub fn set_recv_buffers(&self, buffers: Box<dyn RecvBuffers>) {
+        self.inner.state.lock().unwrap().recv_state.buffers = buffers;
     }
 
     /// Switch to a new UDP socket
@@ -791,6 +802,8 @@ struct RecvState {
     incoming: VecDeque<proto::Incoming>,
     connections: ConnectionSet,
     recv_buf: Box<[u8]>,
+    /// Buffers that received datagrams are copied into before being processed
+    buffers: Box<dyn RecvBuffers>,
     recv_limiter: WorkLimiter,
 }
 
@@ -814,6 +827,7 @@ impl RecvState {
             },
             incoming: VecDeque::new(),
             recv_buf: recv_buf.into(),
+            buffers: Box::new(AllocatingRecvBuffers),
             recv_limiter: WorkLimiter::new(RECV_TIME_BOUND),
         }
     }
@@ -846,12 +860,13 @@ impl RecvState {
                     for (meta, buf) in metas.iter().zip(iovs.iter()).take(msgs) {
                         let mut data = &buf[0..meta.len];
                         while !data.is_empty() {
-                            // Copy each datagram (each GRO segment) into its own allocation, so
-                            // that data retained downstream, e.g. unread stream data, keeps only
-                            // its own datagram allocated rather than the whole GRO batch.
+                            // Copy each datagram (each GRO segment) into its own buffer, so that
+                            // data retained downstream, e.g. unread stream data, doesn't keep the
+                            // whole GRO batch allocated.
                             let (datagram, rest) = data.split_at(meta.stride.min(data.len()));
                             data = rest;
-                            let buf = BytesMut::from(datagram);
+                            let buf = self.buffers.copy_datagram(datagram);
+                            debug_assert_eq!(&buf[..], datagram);
                             let mut response_buffer = Vec::new();
                             match endpoint.handle(
                                 now,
