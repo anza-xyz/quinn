@@ -19,4 +19,9 @@ expression = "ISC AND MIT AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [advisories]
-ignore = ["RUSTSEC-2025-0052"]
+ignore = [
+    # async-std is discontinued; only used by the optional `runtime-async-std` runtime
+    "RUSTSEC-2025-0052",
+    # pin-utils is unmaintained; only pulled in by async-std
+    "RUSTSEC-2026-0441",
+]
