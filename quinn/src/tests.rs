@@ -21,7 +21,7 @@ use std::{
 
 use crate::runtime::{AsyncTimer, AsyncUdpSocket, Runtime as _, TokioRuntime, UdpPoller};
 use crate::{Duration, Instant};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use proto::{
     ConnectionId, RandomConnectionIdGenerator,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
@@ -43,7 +43,9 @@ use tracing_futures::Instrument as _;
 use tracing_subscriber::EnvFilter;
 use udp::RecvMeta;
 
-use super::{ClientConfig, Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
+use super::{
+    ClientConfig, Endpoint, EndpointConfig, RecvBuffers, RecvStream, SendStream, TransportConfig,
+};
 
 #[test]
 fn handshake_timeout() {
@@ -179,6 +181,61 @@ fn read_after_close() {
         let msg = stream.read_to_end(usize::MAX).await.expect("read_to_end");
         assert_eq!(msg, MSG);
     });
+}
+
+/// Counts the bytes copied through it
+struct CountingRecvBuffers(Arc<AtomicUsize>);
+
+impl RecvBuffers for CountingRecvBuffers {
+    fn copy_datagram(&mut self, datagram: &[u8]) -> BytesMut {
+        self.0.fetch_add(datagram.len(), Ordering::Relaxed);
+        BytesMut::from(datagram)
+    }
+}
+
+/// Checks that received datagrams are copied through buffers installed with `set_recv_buffers()`
+#[test]
+fn custom_recv_buffers() {
+    let _guard = subscribe();
+    let runtime = rt_basic();
+    let endpoint = {
+        let _guard = runtime.enter();
+        endpoint()
+    };
+    let copied = Arc::new(AtomicUsize::new(0));
+    endpoint.set_recv_buffers(Box::new(CountingRecvBuffers(copied.clone())));
+
+    let msg = (0..100_000u32).map(|i| i as u8).collect::<Vec<_>>();
+    let endpoint2 = endpoint.clone();
+    let sent = msg.clone();
+    runtime.spawn(async move {
+        let conn = endpoint2
+            .accept()
+            .await
+            .expect("endpoint")
+            .await
+            .expect("connection");
+        let mut stream = conn.open_uni().await.unwrap();
+        stream.write_all(&sent).await.unwrap();
+        stream.finish().unwrap();
+        _ = stream.stopped().await;
+    });
+    let received = runtime.block_on(async move {
+        let conn = endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap()
+            .await
+            .expect("connect");
+        let mut stream = conn.accept_uni().await.expect("incoming streams");
+        stream.read_to_end(usize::MAX).await.expect("read_to_end")
+    });
+    assert_eq!(received, msg);
+
+    let copied = copied.load(Ordering::Relaxed);
+    assert!(
+        copied > msg.len(),
+        "stream data should be received through the custom buffers, but only {copied} bytes were copied"
+    );
 }
 
 #[test]
