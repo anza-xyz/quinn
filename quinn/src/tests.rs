@@ -183,16 +183,17 @@ fn read_after_close() {
     });
 }
 
-/// Counts the datagrams copied through it
+/// Counts the bytes copied through it
 struct CountingRecvBuffers(Arc<AtomicUsize>);
 
 impl RecvBuffers for CountingRecvBuffers {
     fn copy_datagram(&mut self, datagram: &[u8]) -> BytesMut {
-        self.0.fetch_add(1, Ordering::Relaxed);
+        self.0.fetch_add(datagram.len(), Ordering::Relaxed);
         BytesMut::from(datagram)
     }
 }
 
+/// Checks that received datagrams are copied through buffers installed with `set_recv_buffers()`
 #[test]
 fn custom_recv_buffers() {
     let _guard = subscribe();
@@ -219,20 +220,22 @@ fn custom_recv_buffers() {
         stream.finish().unwrap();
         _ = stream.stopped().await;
     });
-    runtime.block_on(async move {
+    let received = runtime.block_on(async move {
         let conn = endpoint
             .connect(endpoint.local_addr().unwrap(), "localhost")
             .unwrap()
             .await
             .expect("connect");
         let mut stream = conn.accept_uni().await.expect("incoming streams");
-        let received = stream.read_to_end(usize::MAX).await.expect("read_to_end");
-        assert_eq!(received, msg);
+        stream.read_to_end(usize::MAX).await.expect("read_to_end")
     });
+    assert_eq!(received, msg);
 
-    // The endpoint talks to itself, so both sides' datagrams went through the custom buffers,
-    // including the ~80 carrying the stream data
-    assert!(copied.load(Ordering::Relaxed) >= 80);
+    let copied = copied.load(Ordering::Relaxed);
+    assert!(
+        copied > msg.len(),
+        "stream data should be received through the custom buffers, but only {copied} bytes were copied"
+    );
 }
 
 #[test]

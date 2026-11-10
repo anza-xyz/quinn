@@ -17,13 +17,16 @@ use bytes::BytesMut;
 /// buffers small.
 ///
 /// The default implementation copies each datagram into a new allocation of exactly its size.
+///
+/// [`copy_datagram()`](Self::copy_datagram) is called for every received datagram with the
+/// endpoint's lock held, so implementations must not block, panic, or call into the
+/// [`Endpoint`](crate::Endpoint).
 pub trait RecvBuffers: Send + 'static {
     /// Returns a buffer holding exactly the bytes of `datagram`
     fn copy_datagram(&mut self, datagram: &[u8]) -> BytesMut;
 }
 
 /// Copies each datagram into its own allocation
-#[derive(Debug, Default)]
 pub(crate) struct AllocatingRecvBuffers;
 
 impl RecvBuffers for AllocatingRecvBuffers {
