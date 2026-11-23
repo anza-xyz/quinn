@@ -6,6 +6,7 @@ use rustls::crypto::aws_lc_rs::default_provider;
 use rustls::crypto::ring::default_provider;
 
 use std::{
+    collections::HashMap,
     convert::TryInto,
     future::Future,
     io::{self, IoSliceMut},
@@ -33,6 +34,7 @@ use rustls::{
     RootCertStore,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
 };
+use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 use tokio::{
     join,
@@ -44,7 +46,8 @@ use tracing_subscriber::EnvFilter;
 use udp::RecvMeta;
 
 use super::{
-    ClientConfig, Endpoint, EndpointConfig, RecvBuffers, RecvStream, SendStream, TransportConfig,
+    ClientConfig, DatagramId, DatagramOutcome, Endpoint, EndpointConfig, RecvBuffers, RecvStream,
+    SendAckTrackedError, SendDatagramError, SendStream, TransportConfig,
 };
 
 #[test]
@@ -1540,6 +1543,84 @@ async fn read_datagrams() {
     assert!(matches!(
         client.read_datagrams(&mut bufs).await,
         Err(crate::ConnectionError::ApplicationClosed(_))
+    ));
+}
+
+/// Per-datagram futures built on the batch outcome API, as an application would
+struct AckTracker {
+    conn: crate::Connection,
+    waiters: Arc<Mutex<HashMap<DatagramId, oneshot::Sender<DatagramOutcome>>>>,
+}
+
+impl AckTracker {
+    fn new(conn: crate::Connection) -> Self {
+        let waiters = Arc::new(Mutex::new(HashMap::<_, oneshot::Sender<_>>::new()));
+        tokio::spawn({
+            let conn = conn.clone();
+            let waiters = waiters.clone();
+            async move {
+                let mut outcomes = Vec::new();
+                // On connection loss, the remaining senders are dropped with the task
+                while conn.read_datagram_outcomes(&mut outcomes).await.is_ok() {
+                    let mut waiters = waiters.lock().unwrap();
+                    for (id, outcome) in outcomes.drain(..) {
+                        let waiter = waiters
+                            .remove(&id)
+                            .expect("every tracked datagram is registered before its outcome");
+                        // The caller may have stopped waiting
+                        let _ = waiter.send(outcome);
+                    }
+                }
+            }
+        });
+        Self { conn, waiters }
+    }
+
+    fn send(&self, data: Bytes) -> Result<oneshot::Receiver<DatagramOutcome>, SendAckTrackedError> {
+        // Hold the lock across the send so the dispatcher can't see the outcome before the waiter
+        let mut waiters = self.waiters.lock().unwrap();
+        let id = self.conn.send_ack_tracked(data)?;
+        let (tx, rx) = oneshot::channel();
+        waiters.insert(id, tx);
+        Ok(rx)
+    }
+}
+
+#[tokio::test]
+async fn ack_tracked_datagram_futures() {
+    let _guard = subscribe();
+    let endpoint = endpoint();
+
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    let tracker = AckTracker::new(client.clone());
+    let sent = [&b"one"[..], b"two", b"three"];
+    let pending = sent.map(|x| tracker.send(Bytes::from_static(x)).unwrap());
+    for outcome in pending {
+        assert_eq!(outcome.await.unwrap(), DatagramOutcome::Acked);
+    }
+    for x in sent {
+        assert_eq!(server.read_datagram().await.unwrap(), x);
+    }
+
+    client.close(0u32.into(), b"done");
+    let mut outcomes = Vec::new();
+    assert!(matches!(
+        client.read_datagram_outcomes(&mut outcomes).await,
+        Err(crate::ConnectionError::LocallyClosed)
+    ));
+    assert!(matches!(
+        tracker.send(Bytes::from_static(b"late")),
+        Err(SendAckTrackedError::Send(
+            SendDatagramError::ConnectionLost(_)
+        ))
     ));
 }
 
