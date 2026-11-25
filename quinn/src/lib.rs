@@ -63,11 +63,11 @@ pub use proto::BloomTokenLog;
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, Chunk, ClientConfig, ClosedStream, ConfigError,
     ConnectError, ConnectionClose, ConnectionError, ConnectionId, ConnectionIdGenerator,
-    ConnectionStats, Dir, EcnCodepoint, EndpointConfig, FrameStats, FrameType, IdleTimeout,
-    MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore, PathStats, ServerConfig, Side, StdSystemTime,
-    StreamId, TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, Transmit,
-    TransportConfig, TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt,
-    VarIntBoundsExceeded, Written, congestion, crypto,
+    ConnectionStats, DatagramId, DatagramOutcome, Dir, EcnCodepoint, EndpointConfig, FrameStats,
+    FrameType, IdleTimeout, MtuDiscoveryConfig, NoneTokenLog, NoneTokenStore, PathStats,
+    ServerConfig, Side, StdSystemTime, StreamId, TimeSource, TokenLog, TokenMemoryCache,
+    TokenReuseError, TokenStore, Transmit, TransportConfig, TransportErrorCode, UdpStats,
+    ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written, congestion, crypto,
 };
 #[cfg(feature = "qlog")]
 pub use proto::{QlogConfig, QlogStream};
@@ -76,8 +76,9 @@ pub use rustls;
 pub use udp;
 
 pub use crate::connection::{
-    AcceptBi, AcceptUni, Connecting, Connection, OpenBi, OpenUni, ReadDatagram, ReadDatagrams,
-    SendDatagram, SendDatagramError, ZeroRttAccepted,
+    AcceptBi, AcceptUni, Connecting, Connection, OpenBi, OpenUni, ReadDatagram,
+    ReadDatagramOutcomes, ReadDatagrams, SendAckTrackedError, SendDatagram, SendDatagramError,
+    ZeroRttAccepted,
 };
 pub use crate::endpoint::{Accept, Endpoint, EndpointStats};
 pub use crate::incoming::{Incoming, IncomingFuture, RetryError};

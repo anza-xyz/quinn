@@ -10,6 +10,7 @@ use rustc_hash::FxHashSet;
 use tracing::trace;
 
 use super::assembler::Assembler;
+use super::datagrams::DatagramId;
 use crate::{
     Dir, Duration, Instant, SocketAddr, StreamId, TransportError, VarInt, cid_queue::CidQueue,
     connection::StreamsState, crypto::Keys, frame, packet::SpaceId, range_set::ArrayRangeSet,
@@ -301,6 +302,8 @@ pub(super) struct SentPacket {
     ///
     /// The actual application data is stored with the stream state.
     pub(super) stream_frames: frame::StreamMetaVec,
+    /// Ack-tracked datagrams carried by the packet
+    pub(super) ack_tracked_datagrams: Box<[DatagramId]>,
 }
 
 /// Retransmittable data queue

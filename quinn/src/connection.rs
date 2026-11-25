@@ -2,7 +2,7 @@ use std::{
     any::Any,
     fmt,
     future::Future,
-    io,
+    io, iter,
     net::{IpAddr, SocketAddr},
     pin::Pin,
     sync::{
@@ -28,8 +28,8 @@ use crate::{
     udp_transmit,
 };
 use proto::{
-    ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, Side, StreamEvent,
-    StreamId, congestion::Controller,
+    ConnectionError, ConnectionHandle, ConnectionStats, DatagramId, DatagramOutcome, Dir,
+    EndpointEvent, Side, StreamEvent, StreamId, congestion::Controller,
 };
 
 /// In-progress connection attempt future
@@ -480,18 +480,58 @@ impl Connection {
         if let Some(ref x) = conn.error {
             return Err(SendDatagramError::ConnectionLost(x.clone()));
         }
-        use proto::SendDatagramError::*;
-        match conn.inner.datagrams().send(data, true) {
-            Ok(()) => {
-                conn.wake();
-                Ok(())
-            }
-            Err(e) => Err(match e {
-                Blocked(..) => unreachable!(),
-                UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
-                Disabled => SendDatagramError::Disabled,
-                TooLarge => SendDatagramError::TooLarge,
-            }),
+        conn.inner
+            .datagrams()
+            .send(data, true)
+            .map_err(SendDatagramError::from_dropping_send)?;
+        conn.wake();
+        Ok(())
+    }
+
+    /// Transmit `data` like [`send_datagram()`](Self::send_datagram), and track whether the peer
+    /// acknowledges it
+    ///
+    /// The returned ID is later paired with the datagram's [`DatagramOutcome`] by
+    /// [`read_datagram_outcomes()`](Self::read_datagram_outcomes).
+    pub fn send_ack_tracked(&self, data: Bytes) -> Result<DatagramId, SendAckTrackedError> {
+        let conn = &mut *self.0.state.lock("send_ack_tracked");
+        if let Some(x) = &conn.error {
+            return Err(SendDatagramError::ConnectionLost(x.clone()).into());
+        }
+        let id = conn
+            .inner
+            .datagrams()
+            .send_ack_tracked(data)
+            .map_err(|e| match e {
+                proto::SendAckTrackedError::Send(e) => {
+                    SendDatagramError::from_dropping_send(e).into()
+                }
+                proto::SendAckTrackedError::TooManyTracked(data) => {
+                    SendAckTrackedError::TooManyTracked(data)
+                }
+            })?;
+        conn.wake();
+        Ok(id)
+    }
+
+    /// Receive outcomes of datagrams sent with [`send_ack_tracked()`](Self::send_ack_tracked)
+    ///
+    /// Waits until at least one outcome is available, then appends all available outcomes to
+    /// `outcomes` and returns how many were appended. Datagrams outstanding when the connection
+    /// closes get no outcome: once the remaining outcomes are drained, the connection error is
+    /// returned.
+    ///
+    /// Concurrent callers split the outcomes between them, so a single consumer is expected.
+    ///
+    /// This method is cancellation safe. If this does not resolve, no outcomes were consumed.
+    pub fn read_datagram_outcomes<'a>(
+        &'a self,
+        outcomes: &'a mut Vec<(DatagramId, DatagramOutcome)>,
+    ) -> ReadDatagramOutcomes<'a> {
+        ReadDatagramOutcomes {
+            conn: &self.0,
+            outcomes,
+            notify: self.0.shared.datagram_outcomes.notified(),
         }
     }
 
@@ -918,6 +958,45 @@ impl Future for ReadDatagrams<'_> {
 }
 
 pin_project! {
+    /// Future produced by [`Connection::read_datagram_outcomes`]
+    pub struct ReadDatagramOutcomes<'a> {
+        conn: &'a ConnectionRef,
+        outcomes: &'a mut Vec<(DatagramId, DatagramOutcome)>,
+        #[pin]
+        notify: Notified<'a>,
+    }
+}
+
+impl Future for ReadDatagramOutcomes<'_> {
+    type Output = Result<usize, ConnectionError>;
+    fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.project();
+        let mut state = this.conn.state.lock("ReadDatagramOutcomes::poll");
+        // As in `ReadDatagram`, buffered outcomes take precedence over `state.error`
+        let mut datagrams = state.inner.datagrams();
+        let before = this.outcomes.len();
+        this.outcomes
+            .extend(iter::from_fn(|| datagrams.poll_outcome()));
+        let n = this.outcomes.len() - before;
+        if n > 0 {
+            return Poll::Ready(Ok(n));
+        } else if let Some(e) = &state.error {
+            return Poll::Ready(Err(e.clone()));
+        }
+        loop {
+            match this.notify.as_mut().poll(ctx) {
+                // `state` lock ensures we didn't race with readiness
+                Poll::Pending => return Poll::Pending,
+                // Spurious wakeup, get a new future
+                Poll::Ready(()) => this
+                    .notify
+                    .set(this.conn.shared.datagram_outcomes.notified()),
+            }
+        }
+    }
+}
+
+pin_project! {
     /// Future produced by [`Connection::send_datagram_wait`]
     pub struct SendDatagram<'a> {
         conn: &'a ConnectionRef,
@@ -1059,6 +1138,7 @@ pub(crate) struct Shared {
     stream_incoming: [Notify; 2],
     datagram_received: Notify,
     datagrams_unblocked: Notify,
+    datagram_outcomes: Notify,
     closed: Notify,
     /// Number of live handles that can used to initiate or handle I/O; excludes the driver
     ref_count: AtomicUsize,
@@ -1236,6 +1316,9 @@ impl State {
                 DatagramsUnblocked => {
                     shared.datagrams_unblocked.notify_waiters();
                 }
+                DatagramOutcomes => {
+                    shared.datagram_outcomes.notify_waiters();
+                }
                 Stream(StreamEvent::Readable { id }) => wake_stream(id, &mut self.blocked_readers),
                 Stream(StreamEvent::Available { dir }) => {
                     // Might mean any number of streams are ready, so we wake up everyone
@@ -1314,6 +1397,7 @@ impl State {
         shared.stream_incoming[Dir::Bi as usize].notify_waiters();
         shared.datagram_received.notify_waiters();
         shared.datagrams_unblocked.notify_waiters();
+        shared.datagram_outcomes.notify_waiters();
         if let Some(x) = self.on_connected.take() {
             let _ = x.send(false);
         }
@@ -1401,6 +1485,33 @@ pub enum SendDatagramError {
     /// The connection was lost
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
+}
+
+impl SendDatagramError {
+    /// Convert an error from a proto send with `drop = true`, which never blocks
+    fn from_dropping_send(e: proto::SendDatagramError) -> Self {
+        use proto::SendDatagramError::*;
+        match e {
+            Blocked(..) => unreachable!("sends that drop old datagrams never block"),
+            UnsupportedByPeer => Self::UnsupportedByPeer,
+            Disabled => Self::Disabled,
+            TooLarge => Self::TooLarge,
+        }
+    }
+}
+
+/// Errors that can arise when sending an ack-tracked datagram
+#[derive(Debug, Error, Clone, Eq, PartialEq)]
+pub enum SendAckTrackedError {
+    /// The datagram could not be sent
+    #[error(transparent)]
+    Send(#[from] SendDatagramError),
+    /// Too many ack-tracked datagrams have no consumed outcome
+    ///
+    /// See [`TransportConfig::max_ack_tracked_datagrams`](crate::TransportConfig::max_ack_tracked_datagrams).
+    /// Consume outcomes with [`Connection::read_datagram_outcomes`] before retrying.
+    #[error("too many ack-tracked datagrams outstanding")]
+    TooManyTracked(Bytes),
 }
 
 /// The maximum amount of datagrams which will be produced in a single `drive_transmit` call

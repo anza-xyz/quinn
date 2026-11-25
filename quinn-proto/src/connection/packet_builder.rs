@@ -233,6 +233,7 @@ impl PacketBuilder {
             ack_eliciting,
             retransmits: sent.retransmits,
             stream_frames: sent.stream_frames,
+            ack_tracked_datagrams: sent.ack_tracked_datagrams.into_boxed_slice(),
         };
 
         conn.path

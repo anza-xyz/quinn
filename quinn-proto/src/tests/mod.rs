@@ -2682,6 +2682,99 @@ fn datagram_unsupported() {
 }
 
 #[test]
+fn ack_tracked_datagram_acked() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect();
+    let drop = true;
+
+    let id = pair
+        .client_datagrams(client_ch)
+        .send_ack_tracked(Bytes::from_static(b"tracked"))
+        .unwrap();
+    pair.client_datagrams(client_ch)
+        .send(Bytes::from_static(b"untracked"), drop)
+        .unwrap();
+    pair.drive();
+
+    assert_matches!(
+        pair.client_conn_mut(client_ch).poll(),
+        Some(Event::DatagramOutcomes)
+    );
+    assert_eq!(
+        pair.client_datagrams(client_ch).poll_outcome(),
+        Some((id, DatagramOutcome::Acked))
+    );
+    assert_eq!(pair.client_datagrams(client_ch).poll_outcome(), None);
+}
+
+#[test]
+fn ack_tracked_datagram_lost() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect();
+
+    let id = pair
+        .client_datagrams(client_ch)
+        .send_ack_tracked(Bytes::from_static(b"tracked"))
+        .unwrap();
+    pair.client.drive(pair.time, pair.server.addr);
+    assert_eq!(
+        pair.client.outbound.len(),
+        1,
+        "datagram should be sent in a single packet"
+    );
+    pair.client.outbound.clear();
+    pair.drive();
+
+    assert_eq!(
+        pair.client_datagrams(client_ch).poll_outcome(),
+        Some((id, DatagramOutcome::Lost))
+    );
+    assert_eq!(pair.client_datagrams(client_ch).poll_outcome(), None);
+}
+
+#[test]
+fn ack_tracked_datagram_limit() {
+    let _guard = subscribe();
+    let mut transport = TransportConfig::default();
+    transport.max_ack_tracked_datagrams(1);
+    let mut config = client_config();
+    config.transport_config(Arc::new(transport));
+    let mut pair = Pair::default();
+    let (client_ch, _) = pair.connect_with(config);
+
+    let first = pair
+        .client_datagrams(client_ch)
+        .send_ack_tracked(Bytes::from_static(b"first"))
+        .unwrap();
+    assert_eq!(
+        pair.client_datagrams(client_ch)
+            .send_ack_tracked(Bytes::from_static(b"second")),
+        Err(SendAckTrackedError::TooManyTracked(Bytes::from_static(
+            b"second"
+        )))
+    );
+
+    // The slot stays taken once resolved, until the outcome is consumed
+    pair.drive();
+    assert_matches!(
+        pair.client_datagrams(client_ch)
+            .send_ack_tracked(Bytes::from_static(b"second")),
+        Err(SendAckTrackedError::TooManyTracked(_))
+    );
+    assert_eq!(
+        pair.client_datagrams(client_ch).poll_outcome(),
+        Some((first, DatagramOutcome::Acked))
+    );
+    let second = pair
+        .client_datagrams(client_ch)
+        .send_ack_tracked(Bytes::from_static(b"second"))
+        .unwrap();
+    assert_ne!(first, second);
+}
+
+#[test]
 fn large_initial() {
     let _guard = subscribe();
     let server_config =

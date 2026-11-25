@@ -47,7 +47,9 @@ use cid_state::CidState;
 
 mod datagrams;
 use datagrams::DatagramState;
-pub use datagrams::{Datagrams, SendDatagramError};
+pub use datagrams::{
+    DatagramId, DatagramOutcome, Datagrams, SendAckTrackedError, SendDatagramError,
+};
 
 mod mtud;
 mod pacing;
@@ -396,6 +398,10 @@ impl Connection {
     pub fn poll(&mut self) -> Option<Event> {
         if let Some(x) = self.events.pop_front() {
             return Some(x);
+        }
+
+        if self.datagrams.take_outcomes_event() {
+            return Some(Event::DatagramOutcomes);
         }
 
         if let Some(event) = self.streams.poll() {
@@ -1636,6 +1642,8 @@ impl Connection {
         for frame in info.stream_frames {
             self.streams.received_ack_of(frame);
         }
+        self.datagrams
+            .resolve(&info.ack_tracked_datagrams, DatagramOutcome::Acked);
     }
 
     fn set_key_discard_timer(&mut self, now: Instant, space: SpaceId) {
@@ -1789,6 +1797,8 @@ impl Connection {
                 for frame in info.stream_frames {
                     self.streams.retransmit(frame);
                 }
+                self.datagrams
+                    .resolve(&info.ack_tracked_datagrams, DatagramOutcome::Lost);
                 self.spaces[pn_space].pending |= info.retransmits;
                 self.path.mtud.on_non_probe_lost(packet, info.size);
             }
@@ -2530,6 +2540,8 @@ impl Connection {
                 let zero_rtt = mem::take(&mut self.spaces[SpaceId::Data].sent_packets);
                 for info in zero_rtt.into_values() {
                     self.remove_in_flight(&info);
+                    self.datagrams
+                        .resolve(&info.ack_tracked_datagrams, DatagramOutcome::Lost);
                     self.spaces[SpaceId::Data].pending |= info.retransmits;
                 }
                 self.streams.retransmit_all_for_0rtt();
@@ -2596,6 +2608,8 @@ impl Connection {
                                 mem::take(&mut self.spaces[SpaceId::Data].sent_packets);
                             for packet in sent_packets.into_values() {
                                 self.remove_in_flight(&packet);
+                                self.datagrams
+                                    .resolve(&packet.ack_tracked_datagrams, DatagramOutcome::Lost);
                             }
                         } else {
                             self.accepted_0rtt = true;
@@ -3361,7 +3375,10 @@ impl Connection {
         // DATAGRAM
         let mut sent_datagrams = false;
         while buf.len() + Datagram::SIZE_BOUND < max_size && space_id == SpaceId::Data {
-            match self.datagrams.write(buf, max_size) {
+            match self
+                .datagrams
+                .write(buf, max_size, &mut sent.ack_tracked_datagrams)
+            {
                 true => {
                     sent_datagrams = true;
                     sent.non_retransmits = true;
@@ -4077,6 +4094,10 @@ pub enum Event {
     DatagramReceived,
     /// One or more application datagrams have been sent after blocking
     DatagramsUnblocked,
+    /// Outcomes of one or more ack-tracked datagrams are ready
+    ///
+    /// Retrieve them with [`Datagrams::poll_outcome`].
+    DatagramOutcomes,
 }
 
 fn get_max_ack_delay(params: &TransportParameters) -> Duration {
@@ -4113,6 +4134,7 @@ struct SentFrames {
     retransmits: ThinRetransmits,
     largest_acked: Option<u64>,
     stream_frames: StreamMetaVec,
+    ack_tracked_datagrams: Vec<DatagramId>,
     /// Whether the packet contains non-retransmittable frames (like datagrams)
     non_retransmits: bool,
     requires_padding: bool,
