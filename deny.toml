@@ -23,4 +23,80 @@ ignore = [
     "RUSTSEC-2025-0052",
     # Agave v4.4 uses patched rustls 0.23.45; preserve Quinn's upstream lockfile.
     "RUSTSEC-2026-0285",
+
+    # Crate:     rustls
+    # Version:   0.23.40
+    # Title:     `Debug` impls for client session values expose TLS secrets
+    # Date:      2026-10-14
+    # ID:        RUSTSEC-2026-0346
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0346
+    # Solution:  Upgrade to >=0.23.46
+    # Quinn Ok:  only custom `ClientSessionStore` implementations that format session values
+    # are affected, and Quinn has none. Lockfile only; consumers resolve their own rustls.
+    "RUSTSEC-2026-0346",
+
+    # Crate:     rustls
+    # Version:   0.23.40
+    # Title:     Brotli certificate decompression can allocate up to 1 GiB before authentication
+    # Date:      2026-10-14
+    # ID:        RUSTSEC-2026-0348
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0348
+    # Solution:  Upgrade to >=0.23.46
+    # Quinn Ok:  needs the non-default rustls `brotli` feature, which Quinn does not enable.
+    "RUSTSEC-2026-0348",
+
+    # Crate:     rustls
+    # Version:   0.23.40
+    # Title:     Unauthenticated ServerHello can downgrade later connections to classical key
+    #            exchange
+    # Date:      2026-10-14
+    # ID:        RUSTSEC-2026-0349
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0349
+    # Solution:  Upgrade to >=0.23.46
+    # Quinn Ok:  only clients that prefer hybrid post-quantum key exchange are affected; Quinn
+    # enables that only under its internal `__rustls-post-quantum-test` feature.
+    "RUSTSEC-2026-0349",
+
+    # Crate:     rustls-webpki
+    # Version:   0.103.13
+    # Title:     Certificate verification may accept distrusted intermediates
+    # Date:      2026-10-20
+    # ID:        RUSTSEC-2026-0382
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0382
+    # Solution:  Upgrade to >=0.103.16, <0.104.0-alpha.1 OR >=0.104.0-alpha.8
+    # Quinn Ok:  lockfile only, used by Quinn's own tests and examples. Agave v4.4 resolves
+    # rustls-webpki 0.103.16, which has the fix.
+    "RUSTSEC-2026-0382",
+
+    # Crate:     webpki-root-certs
+    # Version:   1.0.7
+    # Title:     Bundled root certificates allow trust in distrusted emSign intermediates
+    # Date:      2026-10-19
+    # ID:        RUSTSEC-2026-0383
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0383
+    # Solution:  Upgrade to >=1.0.10
+    # Quinn Ok:  only a wasm32 dependency of rustls-platform-verifier; not built for Agave.
+    "RUSTSEC-2026-0383",
+
+    # Crate:     tokio
+    # Version:   1.52.3
+    # Title:     `AsyncFd::new` and related constructors violate I/O safety
+    # Date:      2026-10-13
+    # ID:        RUSTSEC-2026-0386
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0386
+    # Solution:  Upgrade to >=1.51.6, <1.52.0 OR >=1.53.3
+    # Quinn Ok:  unsound API, not exploitable by itself; Quinn never calls the `AsyncFd`
+    # constructors.
+    "RUSTSEC-2026-0386",
+
+    # Crate:     url
+    # Version:   2.5.8
+    # Title:     Stack overflow in `Url::origin()` on nested `blob:` URLs
+    # Date:      2026-11-20
+    # ID:        RUSTSEC-2026-0592
+    # URL:       https://rustsec.org/advisories/RUSTSEC-2026-0592
+    # Solution:  Upgrade to >=2.5.9
+    # Quinn Ok:  url is a dev-dependency used only by the client example, which never calls
+    # `Url::origin` or `url::quirks::origin`.
+    "RUSTSEC-2026-0592",
 ]
