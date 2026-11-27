@@ -81,7 +81,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "anza-quinn"
-version = "0.11.12-vendor.1"
+version = "0.11.12-vendor.2"
 dependencies = [
  "anyhow",
  "anza-quinn-proto",
@@ -113,7 +113,7 @@ dependencies = [
 
 [[package]]
 name = "anza-quinn-proto"
-version = "0.11.19-vendor.1"
+version = "0.11.19-vendor.2"
 dependencies = [
  "arbitrary",
  "assert_matches",
